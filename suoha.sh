@@ -1,5 +1,5 @@
 #!/bin/bash
-# onekey suoha - Full Protocol Edition (每次运行先彻底清空旧环境 + Argo + Reality三件套 + AnyTLS + HY2 + TUIC + Snell双栈 + SS-IPv6)
+# onekey suoha - Full Protocol Edition (Argo VLESS/Trojan + Reality + AnyTLS + HY2 + TUIC + Snell)
 
 export PATH=$PATH:/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin
 
@@ -48,56 +48,6 @@ if [ $n -eq 5 ]; then
     n=0
 fi
 
-# 每次运行前先彻底清空所有旧进程、旧目录、旧缓存与旧订阅服务
-function clean_everything_first() {
-    local pid_files=(
-        "/opt/suoha_quick/singbox.pid"
-        "/opt/suoha_quick/xray.pid"
-        "/opt/suoha_quick/cf_main.pid"
-        "/opt/suoha_quick/cf_vl.pid"
-        "/opt/suoha_quick/cf_tr.pid"
-        "/opt/suoha_quick/argo_mux.pid"
-        "/opt/suoha_quick/snell_v4.pid"
-        "/opt/suoha_quick/snell_v6.pid"
-        "/opt/suoha_quick/sub_http.pid"
-    )
-    for pf in "${pid_files[@]}"; do
-        if [ -f "$pf" ]; then
-            local tpid
-            tpid=$(tr -d ' \n\r' < "$pf")
-            if [[ "$tpid" =~ ^[0-9]+$ ]] && [ "$tpid" != "$$" ] && [ "$tpid" != "$PPID" ]; then
-                kill -9 "$tpid" >/dev/null 2>&1
-            fi
-            rm -f "$pf"
-        fi
-    done
-
-    # 按可执行文件名精准清理残留代理进程（绝不误杀当前 bash 脚本）
-    for bin_name in sing-box xray cloudflared-linux snell-server; do
-        if command -v pidof >/dev/null 2>&1; then
-            for pid in $(pidof "$bin_name" 2>/dev/null); do
-                if [ "$pid" != "$$" ] && [ "$pid" != "$PPID" ]; then
-                    kill -9 "$pid" >/dev/null 2>&1
-                fi
-            done
-        elif command -v killall >/dev/null 2>&1; then
-            killall -9 "$bin_name" >/dev/null 2>&1
-        fi
-    done
-
-    # 释放旧的订阅服务端口
-    if [ -f "/etc/suoha_sub_port" ]; then
-        local old_port
-        old_port=$(tr -d ' \n\r' < /etc/suoha_sub_port)
-        if [[ "$old_port" =~ ^[0-9]+$ ]] && command -v fuser >/dev/null 2>&1; then
-            fuser -k "${old_port}/tcp" >/dev/null 2>&1
-        fi
-    fi
-
-    # 彻底清空旧工作目录与静态订阅目录
-    rm -rf /opt/suoha /opt/suoha_quick /var/www/suoha_sub /usr/bin/suoha
-}
-
 install_deps() {
     local deps=("unzip" "curl" "python3" "openssl" "tar" "jq")
     local need_update=0
@@ -109,13 +59,13 @@ install_deps() {
     done
 
     if [ $need_update -eq 1 ]; then
-        show_progress 5 "正在更新系统软件源..."
+        show_progress 4 "正在更新系统软件源..."
         ${linux_update[$n]} >/dev/null 2>&1
         local total_deps=${#deps[@]}
         local idx=0
         for dep in "${deps[@]}"; do
             idx=$((idx+1))
-            local step_pct=$((5 + idx * 7 / total_deps))
+            local step_pct=$((4 + idx * 8 / total_deps))
             if [ -z "$(type -P "$dep")" ]; then
                 show_progress $step_pct "正在安装依赖组件: ${dep}..."
                 ${linux_install[$n]} "$dep" >/dev/null 2>&1
@@ -146,32 +96,10 @@ function get_server_ipv6() {
     if [ -z "$ip6" ]; then
         ip6=$(curl -s6 --connect-timeout 3 https://ipv6.icanhazip.com 2>/dev/null | tr -d '\n\r ')
     fi
-    echo "$ip6"
-}
-
-function is_port_free() {
-    local p="$1"
-    if ss -tulpn 2>/dev/null | grep -qE ":${p}\b"; then
-        return 1
+    if [ -z "$ip6" ]; then
+        ip6=$(ip -6 addr show scope global 2>/dev/null | grep inet6 | awk '{print $2}' | cut -d/ -f1 | head -n 1 | tr -d '\n\r ')
     fi
-    return 0
-}
-
-function pick_preferred_port() {
-    local candidates=("$@")
-    for p in "${candidates[@]}"; do
-        if is_port_free "$p"; then
-            echo "$p"
-            return
-        fi
-    done
-    while true; do
-        local rp=$((RANDOM%15000+20000))
-        if is_port_free "$rp"; then
-            echo "$rp"
-            return
-        fi
-    done
+    echo "$ip6"
 }
 
 function open_firewall_port() {
@@ -188,14 +116,6 @@ function open_firewall_port() {
             firewall-cmd --zone=public --add-port="${port}/udp" >/dev/null 2>&1
         fi
     fi
-    if command -v iptables >/dev/null 2>&1; then
-        iptables -C INPUT -p tcp --dport "${port}" -j ACCEPT 2>/dev/null || iptables -I INPUT -p tcp --dport "${port}" -j ACCEPT >/dev/null 2>&1
-        iptables -C INPUT -p udp --dport "${port}" -j ACCEPT 2>/dev/null || iptables -I INPUT -p udp --dport "${port}" -j ACCEPT >/dev/null 2>&1
-    fi
-    if command -v ip6tables >/dev/null 2>&1; then
-        ip6tables -C INPUT -p tcp --dport "${port}" -j ACCEPT 2>/dev/null || ip6tables -I INPUT -p tcp --dport "${port}" -j ACCEPT >/dev/null 2>&1
-        ip6tables -C INPUT -p udp --dport "${port}" -j ACCEPT 2>/dev/null || ip6tables -I INPUT -p udp --dport "${port}" -j ACCEPT >/dev/null 2>&1
-    fi
 }
 
 function get_or_create_sub_port() {
@@ -205,21 +125,33 @@ function get_or_create_sub_port() {
         port=$(cat "$port_file" | tr -d '\n\r ')
     fi
     if [[ -z "$port" || ! "$port" =~ ^[0-9]+$ ]]; then
-        port=$(pick_preferred_port 8880 2052 2082 2086 2095)
+        port=$((RANDOM%10000+25000))
         echo "$port" > "$port_file"
     fi
-    open_firewall_port "$port"
     echo "$port"
+}
+
+function safe_kill_pidfile() {
+    local pid_file="$1"
+    if [ -f "$pid_file" ]; then
+        local target_pid
+        target_pid=$(tr -d ' \n\r' < "$pid_file")
+        if [[ "$target_pid" =~ ^[0-9]+$ ]] && [ "$target_pid" != "$$" ] && [ "$target_pid" != "$PPID" ]; then
+            kill -9 "$target_pid" >/dev/null 2>&1
+        fi
+        rm -f "$pid_file"
+    fi
 }
 
 function start_sub_server() {
     local web_dir="$1"
     local port="$2"
 
+    safe_kill_pidfile "/opt/suoha_quick/sub_http.pid"
     if command -v fuser >/dev/null 2>&1; then
         fuser -k "${port}/tcp" >/dev/null 2>&1
     fi
-    sleep 0.2
+    sleep 0.3
 
     if [ -x "$(command -v python3)" ]; then
         nohup python3 -m http.server "$port" --bind :: --directory "$web_dir" >/dev/null 2>&1 &
@@ -230,6 +162,7 @@ function start_sub_server() {
 function sync_to_static_web() {
     local src_dir="$1"
     local static_dir="/var/www/suoha_sub"
+    rm -rf "$static_dir" >/dev/null 2>&1
     mkdir -p "$static_dir" >/dev/null 2>&1
     [ -f "${src_dir}/nodes.txt" ] && cp -f "${src_dir}/nodes.txt" "${static_dir}/nodes.txt" 2>/dev/null
     [ -f "${src_dir}/sub.txt" ] && cp -f "${src_dir}/sub.txt" "${static_dir}/sub.txt" 2>/dev/null
@@ -237,10 +170,42 @@ function sync_to_static_web() {
     [ -f "${src_dir}/surge.conf" ] && cp -f "${src_dir}/surge.conf" "${static_dir}/surge.conf" 2>/dev/null
 }
 
+function stop_all_services() {
+    safe_kill_pidfile "/opt/suoha_quick/singbox.pid"
+    safe_kill_pidfile "/opt/suoha_quick/cf_vl.pid"
+    safe_kill_pidfile "/opt/suoha_quick/cf_tr.pid"
+    safe_kill_pidfile "/opt/suoha_quick/snell.pid"
+    safe_kill_pidfile "/opt/suoha_quick/snell_v6.pid"
+    safe_kill_pidfile "/opt/suoha_quick/sub_http.pid"
+
+    if command -v killall >/dev/null 2>&1; then
+        killall -9 sing-box cloudflared-linux snell-server snell-server-v6 >/dev/null 2>&1
+    else
+        for bin_name in sing-box cloudflared-linux snell-server snell-server-v6; do
+            for pid in $(pidof "$bin_name" 2>/dev/null); do
+                if [ "$pid" != "$$" ] && [ "$pid" != "$PPID" ]; then
+                    kill -9 "$pid" >/dev/null 2>&1
+                fi
+            done
+        done
+    fi
+}
+
 function uninstall_all() {
-    show_progress 30 "正在彻底清空所有代理进程与历史文件..."
-    clean_everything_first
-    rm -f /etc/suoha_sub_port
+    show_progress 20 "正在停止运行中的全协议代理进程..."
+    stop_all_services
+    sleep 0.5
+    show_progress 60 "正在清理 HTTP 订阅守护进程..."
+    if [ -f "/etc/suoha_sub_port" ]; then
+        local old_port
+        old_port=$(tr -d ' \n\r' < /etc/suoha_sub_port)
+        if [[ "$old_port" =~ ^[0-9]+$ ]] && command -v fuser >/dev/null 2>&1; then
+            fuser -k "${old_port}/tcp" >/dev/null 2>&1
+        fi
+    fi
+    sleep 0.5
+    show_progress 90 "正在删除配置文件与证书目录..."
+    rm -rf /opt/suoha /opt/suoha_quick /etc/suoha_sub_port /var/www/suoha_sub /usr/bin/suoha
     show_progress 100 "卸载清理完成！"
     echo -e "\n所有梭哈全协议服务及订阅文件已彻底清理完成。"
     exit 0
@@ -253,46 +218,40 @@ fi
 function quicktunnel_all_in_one() {
     clear
     echo -e "${CYAN}==================================================================${NC}"
-    echo -e "${GREEN}   一键全协议梭哈部署启动中 (先清空旧内容 -> 全自动重构部署)${NC}"
+    echo -e "${GREEN}   一键全协议梭哈部署启动中 (Argo + Reality + AnyTLS + HY2 + TUIC + Snell)${NC}"
     echo -e "${CYAN}==================================================================${NC}\n"
 
-    show_progress 2 "正在彻底清空原有进程、旧配置与旧订阅缓存..."
-    clean_everything_first
-    sleep 0.5
-
+    show_progress 1 "初始化运行环境并清理旧进程..."
+    stop_all_services
     install_deps
 
+    rm -rf /opt/suoha_quick
     mkdir -p /opt/suoha_quick/cert >/dev/null 2>&1
     cd /opt/suoha_quick || exit 1
 
     # 1. 架构识别与核心二进制下载
     local arch_sb=""
-    local arch_xray=""
     local arch_cf=""
     local arch_snell=""
 
     case "$(uname -m)" in
         x86_64 | x64 | amd64 )
             arch_sb="linux-amd64"
-            arch_xray="Xray-linux-64.zip"
             arch_cf="linux-amd64"
             arch_snell="linux-amd64"
             ;;
         i386 | i686 )
             arch_sb="linux-386"
-            arch_xray="Xray-linux-32.zip"
             arch_cf="linux-386"
             arch_snell="linux-i386"
             ;;
         armv8 | arm64 | aarch64 )
             arch_sb="linux-arm64"
-            arch_xray="Xray-linux-arm64-v8a.zip"
             arch_cf="linux-arm64"
             arch_snell="linux-aarch64"
             ;;
         armv7l )
             arch_sb="linux-armv7"
-            arch_xray="Xray-linux-arm32-v7a.zip"
             arch_cf="linux-arm"
             arch_snell="linux-armv7l"
             ;;
@@ -315,40 +274,27 @@ function quicktunnel_all_in_one() {
     mv "sing-box-${sb_version}-${arch_sb}/sing-box" /opt/suoha_quick/sing-box 2>/dev/null
     rm -rf "sing-box-${sb_version}-${arch_sb}" sb.tar.gz
 
-    show_progress 30 "正在下载最新 Xray-core 核心..."
-    curl -sL "https://github.com/XTLS/Xray-core/releases/latest/download/${arch_xray}" -o xray.zip
-    mkdir -p /opt/suoha_quick/tmp_xray
-    unzip -oq xray.zip -d /opt/suoha_quick/tmp_xray >/dev/null 2>&1
-    mv /opt/suoha_quick/tmp_xray/xray /opt/suoha_quick/xray 2>/dev/null
-    rm -rf /opt/suoha_quick/tmp_xray xray.zip
-
-    show_progress 38 "正在下载 Cloudflare Argo 隧道组件..."
+    show_progress 34 "正在下载 Cloudflare Argo 隧道组件..."
     curl -sL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-${arch_cf}" -o /opt/suoha_quick/cloudflared-linux
 
-    show_progress 45 "正在下载官方 Snell v4.1.1 双栈服务端..."
+    # 下载官方稳定版 Snell v4.1.1 (所有 Clash Verge / Mihomo 版本 100% 原生支持 version: 4)
+    show_progress 44 "正在下载官方 Snell v4.1.1 双栈服务端..."
     curl -sL "https://dl.nssurge.com/snell/snell-server-v4.1.1-${arch_snell}.zip" -o snell.zip
     if [ -s snell.zip ] && unzip -t snell.zip >/dev/null 2>&1; then
         unzip -oq snell.zip -d /opt/suoha_quick/ >/dev/null 2>&1
     fi
     rm -f snell.zip
 
-    chmod +x /opt/suoha_quick/sing-box /opt/suoha_quick/xray /opt/suoha_quick/cloudflared-linux 2>/dev/null
+    chmod +x /opt/suoha_quick/sing-box /opt/suoha_quick/cloudflared-linux 2>/dev/null
     [ -f /opt/suoha_quick/snell-server ] && chmod +x /opt/suoha_quick/snell-server
 
-    if [ ! -x /opt/suoha_quick/sing-box ] || [ ! -x /opt/suoha_quick/xray ] || [ ! -x /opt/suoha_quick/cloudflared-linux ]; then
-        echo -e "\n${RED}核心文件下载失败，请检查服务器网络连接！${NC}"
+    if [ ! -x /opt/suoha_quick/sing-box ] || [ ! -x /opt/suoha_quick/cloudflared-linux ]; then
+        echo -e "\n${RED}核心文件下载失败，请检查服务器网络连接（GitHub 访问是否正常）！${NC}"
         exit 1
     fi
 
-    # 2. 探测服务器公网 IPv4 与出站 IPv6
-    show_progress 49 "正在探测服务器双栈公网 IP..."
-    local server_ip
-    server_ip=$(get_server_ip)
-    local server_ipv6
-    server_ipv6=$(get_server_ipv6)
-
-    # 3. 生成自签名证书与标准 Reality X25519 密钥对
-    show_progress 53 "正在生成自签 TLS 证书与 Reality X25519 密钥对..."
+    # 2. 生成自签名 www.bing.com 证书与 Reality 密钥
+    show_progress 52 "正在自签 www.bing.com TLS 证书与 Reality X25519 密钥..."
     openssl ecparam -genkey -name prime256v1 -out /opt/suoha_quick/cert/bing.key >/dev/null 2>&1
     openssl req -new -x509 -days 3650 -key /opt/suoha_quick/cert/bing.key \
         -out /opt/suoha_quick/cert/bing.crt \
@@ -358,242 +304,38 @@ function quicktunnel_all_in_one() {
     local reality_keys
     reality_keys=$(/opt/suoha_quick/sing-box generate reality-keypair)
     local reality_priv
-    reality_priv=$(echo "$reality_keys" | grep -i "PrivateKey" | cut -d':' -f2 | tr -d ' \r\n')
+    reality_priv=$(echo "$reality_keys" | awk '/PrivateKey:/ {print $2}')
     local reality_pub
-    reality_pub=$(echo "$reality_keys" | grep -i "PublicKey" | cut -d':' -f2 | tr -d ' \r\n')
+    reality_pub=$(echo "$reality_keys" | awk '/PublicKey:/ {print $2}')
     local reality_sid
     reality_sid=$(openssl rand -hex 8)
-    local reality_sni="www.microsoft.com"
 
-    # 4. 分配端口与凭证
+    # 3. 分配随机端口与凭证
     local uuid
     uuid=$(cat /proc/sys/kernel/random/uuid)
     local short_id
     short_id=$(echo "$uuid" | awk -F- '{print $1}')
     local urlpath_vless="vl-${short_id}"
     local urlpath_trojan="tr-${short_id}"
-    local xhttp_path="/xh-${short_id}"
-    local grpc_service="gr-${short_id}"
     local password_all
     password_all=$(openssl rand -hex 12)
-    local ss_method="aes-128-gcm"
-    local ss_password
-    ss_password=$(openssl rand -hex 12)
 
     local port_argo_vl=$((RANDOM%10000+11000))
     local port_argo_tr=$((port_argo_vl+1))
-    local port_rel_vision
-    port_rel_vision=$(pick_preferred_port 443 8443 2053 2083 2087 2096)
-    local port_rel_xhttp
-    port_rel_xhttp=$(pick_preferred_port 8443 2053 2083 2087 2096)
-    local port_rel_grpc
-    port_rel_grpc=$(pick_preferred_port 2053 2083 2087 2096 8443)
-    local port_anytls
-    port_anytls=$(pick_preferred_port 2083 2087 2096 8443)
-    local port_hy2
-    port_hy2=$(pick_preferred_port 2087 2096 8443)
-    local port_tuic
-    port_tuic=$(pick_preferred_port 2096 8443)
-    local port_snell_v4=$((RANDOM%10000+31000))
-    local port_snell_v6=$((port_snell_v4+1))
-    local port_ss_v6=$((port_snell_v4+2))
+    local port_reality=$((RANDOM%10000+21000))
+    local port_anytls=$((port_reality+1))
+    local port_hy2=$((port_reality+2))
+    local port_tuic=$((port_reality+3))
+    local port_snell=$((port_reality+4))
 
-    open_firewall_port "$port_rel_vision"
-    open_firewall_port "$port_rel_xhttp"
-    open_firewall_port "$port_rel_grpc"
+    open_firewall_port "$port_reality"
     open_firewall_port "$port_anytls"
     open_firewall_port "$port_hy2"
     open_firewall_port "$port_tuic"
-    open_firewall_port "$port_snell_v4"
-    open_firewall_port "$port_snell_v6"
-    open_firewall_port "$port_ss_v6"
+    open_firewall_port "$port_snell"
 
-    # 5. 生成 Xray 配置文件 (承担 Reality 三件套 + 本地 Argo VLESS-WS / Trojan-WS)
-    show_progress 58 "正在写入 Xray (Reality 三件套 + Argo 双协议入站) 配置..."
-    local xray_listen="0.0.0.0"
-    if [ -z "$server_ip" ] && [ -n "$server_ipv6" ]; then
-        xray_listen="::"
-    fi
-
-    cat > /opt/suoha_quick/xray.json <<EOF
-{
-  "log": {
-    "loglevel": "error"
-  },
-  "inbounds": [
-    {
-      "tag": "argo-vless-in",
-      "listen": "127.0.0.1",
-      "port": ${port_argo_vl},
-      "protocol": "vless",
-      "settings": {
-        "clients": [
-          {
-            "id": "${uuid}"
-          }
-        ],
-        "decryption": "none"
-      },
-      "streamSettings": {
-        "network": "ws",
-        "wsSettings": {
-          "path": "/${urlpath_vless}"
-        }
-      }
-    },
-    {
-      "tag": "argo-trojan-in",
-      "listen": "127.0.0.1",
-      "port": ${port_argo_tr},
-      "protocol": "trojan",
-      "settings": {
-        "clients": [
-          {
-            "password": "${uuid}"
-          }
-        ]
-      },
-      "streamSettings": {
-        "network": "ws",
-        "wsSettings": {
-          "path": "/${urlpath_trojan}"
-        }
-      }
-    },
-    {
-      "tag": "reality-vision-in",
-      "listen": "${xray_listen}",
-      "port": ${port_rel_vision},
-      "protocol": "vless",
-      "settings": {
-        "clients": [
-          {
-            "id": "${uuid}",
-            "flow": "xtls-rprx-vision"
-          }
-        ],
-        "decryption": "none"
-      },
-      "streamSettings": {
-        "network": "tcp",
-        "security": "reality",
-        "realitySettings": {
-          "show": false,
-          "dest": "${reality_sni}:443",
-          "xver": 0,
-          "serverNames": [
-            "${reality_sni}"
-          ],
-          "privateKey": "${reality_priv}",
-          "shortIds": [
-            "${reality_sid}"
-          ]
-        }
-      },
-      "sniffing": {
-        "enabled": true,
-        "destOverride": [
-          "http",
-          "tls",
-          "quic"
-        ]
-      }
-    },
-    {
-      "tag": "reality-xhttp-in",
-      "listen": "${xray_listen}",
-      "port": ${port_rel_xhttp},
-      "protocol": "vless",
-      "settings": {
-        "clients": [
-          {
-            "id": "${uuid}"
-          }
-        ],
-        "decryption": "none"
-      },
-      "streamSettings": {
-        "network": "xhttp",
-        "xhttpSettings": {
-          "path": "${xhttp_path}",
-          "mode": "auto"
-        },
-        "security": "reality",
-        "realitySettings": {
-          "show": false,
-          "dest": "${reality_sni}:443",
-          "xver": 0,
-          "serverNames": [
-            "${reality_sni}"
-          ],
-          "privateKey": "${reality_priv}",
-          "shortIds": [
-            "${reality_sid}"
-          ]
-        }
-      },
-      "sniffing": {
-        "enabled": true,
-        "destOverride": [
-          "http",
-          "tls",
-          "quic"
-        ]
-      }
-    },
-    {
-      "tag": "reality-grpc-in",
-      "listen": "${xray_listen}",
-      "port": ${port_rel_grpc},
-      "protocol": "vless",
-      "settings": {
-        "clients": [
-          {
-            "id": "${uuid}"
-          }
-        ],
-        "decryption": "none"
-      },
-      "streamSettings": {
-        "network": "grpc",
-        "grpcSettings": {
-          "serviceName": "${grpc_service}"
-        },
-        "security": "reality",
-        "realitySettings": {
-          "show": false,
-          "dest": "${reality_sni}:443",
-          "xver": 0,
-          "serverNames": [
-            "${reality_sni}"
-          ],
-          "privateKey": "${reality_priv}",
-          "shortIds": [
-            "${reality_sid}"
-          ]
-        }
-      },
-      "sniffing": {
-        "enabled": true,
-        "destOverride": [
-          "http",
-          "tls",
-          "quic"
-        ]
-      }
-    }
-  ],
-  "outbounds": [
-    {
-      "protocol": "freedom",
-      "tag": "direct"
-    }
-  ]
-}
-EOF
-
-    # 6. 生成 Sing-box 配置文件 (负责 AnyTLS + Hysteria2 + TUIC v5 + SS-IPv6)
-    show_progress 62 "正在写入 Sing-box (AnyTLS + HY2 + TUIC + SS-IPv6) 配置文件..."
+    # 4. 生成 Sing-box 全协议统一配置文件
+    show_progress 60 "正在写入 Sing-box 全协议与 Snell 配置文件..."
     cat > /opt/suoha_quick/singbox.json <<EOF
 {
   "log": {
@@ -601,6 +343,63 @@ EOF
     "timestamp": true
   },
   "inbounds": [
+    {
+      "type": "vless",
+      "tag": "argo-vless-in",
+      "listen": "127.0.0.1",
+      "listen_port": ${port_argo_vl},
+      "users": [
+        {
+          "uuid": "${uuid}"
+        }
+      ],
+      "transport": {
+        "type": "ws",
+        "path": "/${urlpath_vless}"
+      }
+    },
+    {
+      "type": "trojan",
+      "tag": "argo-trojan-in",
+      "listen": "127.0.0.1",
+      "listen_port": ${port_argo_tr},
+      "users": [
+        {
+          "password": "${uuid}"
+        }
+      ],
+      "transport": {
+        "type": "ws",
+        "path": "/${urlpath_trojan}"
+      }
+    },
+    {
+      "type": "vless",
+      "tag": "vless-reality-in",
+      "listen": "::",
+      "listen_port": ${port_reality},
+      "users": [
+        {
+          "uuid": "${uuid}",
+          "flow": "xtls-rprx-vision"
+        }
+      ],
+      "tls": {
+        "enabled": true,
+        "server_name": "www.bing.com",
+        "reality": {
+          "enabled": true,
+          "handshake": {
+            "server": "www.bing.com",
+            "server_port": 443
+          },
+          "private_key": "${reality_priv}",
+          "short_id": [
+            "${reality_sid}"
+          ]
+        }
+      }
+    },
     {
       "type": "anytls",
       "tag": "anytls-in",
@@ -669,14 +468,6 @@ EOF
         "certificate_path": "/opt/suoha_quick/cert/bing.crt",
         "key_path": "/opt/suoha_quick/cert/bing.key"
       }
-    },
-    {
-      "type": "shadowsocks",
-      "tag": "ss-ipv6-in",
-      "listen": "::",
-      "listen_port": ${port_ss_v6},
-      "method": "${ss_method}",
-      "password": "${ss_password}"
     }
   ],
   "outbounds": [
@@ -688,74 +479,47 @@ EOF
 }
 EOF
 
-    show_progress 66 "正在启动 Xray-core、Sing-box 与双栈 Snell 守护进程..."
-    nohup /opt/suoha_quick/xray run -c /opt/suoha_quick/xray.json >/opt/suoha_quick/xray.log 2>&1 &
-    local xray_pid=$!
-    echo $xray_pid > /opt/suoha_quick/xray.pid
-
+    show_progress 66 "正在启动 Sing-box 与 Snell 核心守护进程..."
     nohup /opt/suoha_quick/sing-box run -c /opt/suoha_quick/singbox.json >/opt/suoha_quick/singbox.log 2>&1 &
-    local sb_pid=$!
-    echo $sb_pid > /opt/suoha_quick/singbox.pid
+    echo $! > /opt/suoha_quick/singbox.pid
 
-    sleep 1
-    local xray_status=""
-    if kill -0 "$xray_pid" 2>/dev/null; then
-        local listening_ports
-        listening_ports=$(ss -tulpn 2>/dev/null | grep "pid=${xray_pid}" | awk '{print $5}' | tr '\n' ' ')
-        xray_status="运行正常 (PID:${xray_pid} | 监听:${listening_ports:-已就绪})"
-    else
-        xray_status="启动失败! 错误日志: $(cat /opt/suoha_quick/xray.log 2>/dev/null | tr '\n' ' ')"
-    fi
-
-    # 启动独立 IPv4 与 IPv6 双 Snell 实例
     local snell_psk
     snell_psk=$(openssl rand -base64 24 | tr -dc 'a-zA-Z0-9' | head -c 24)
-    local snell_v4_ok=0
-    local snell_v6_ok=0
-    local snell_status=""
+    local snell_installed=0
+    local snell_status="未安装"
 
     if [ -x /opt/suoha_quick/snell-server ]; then
-        if [ -n "$server_ip" ]; then
-            cat > /opt/suoha_quick/snell_v4.conf <<EOF
+        cat > /opt/suoha_quick/snell.conf <<EOF
 [snell-server]
-listen = 0.0.0.0:${port_snell_v4}
-psk = ${snell_psk}
-ipv6 = false
-obfs = off
-EOF
-            nohup /opt/suoha_quick/snell-server -c /opt/suoha_quick/snell_v4.conf >/opt/suoha_quick/snell_v4.log 2>&1 &
-            local snell_v4_pid=$!
-            echo $snell_v4_pid > /opt/suoha_quick/snell_v4.pid
-            sleep 0.5
-            if kill -0 "$snell_v4_pid" 2>/dev/null; then
-                snell_v4_ok=1
-                snell_status="IPv4正常(端口:${port_snell_v4}) "
-            fi
-        fi
-
-        if [ -n "$server_ipv6" ]; then
-            cat > /opt/suoha_quick/snell_v6.conf <<EOF
-[snell-server]
-listen = [::]:${port_snell_v6}
+listen = [::]:${port_snell}
 psk = ${snell_psk}
 ipv6 = true
 obfs = off
 EOF
-            nohup /opt/suoha_quick/snell-server -c /opt/suoha_quick/snell_v6.conf >/opt/suoha_quick/snell_v6.log 2>&1 &
-            local snell_v6_pid=$!
-            echo $snell_v6_pid > /opt/suoha_quick/snell_v6.pid
+        nohup /opt/suoha_quick/snell-server -c /opt/suoha_quick/snell.conf >/opt/suoha_quick/snell.log 2>&1 &
+        local snell_pid=$!
+        echo $snell_pid > /opt/suoha_quick/snell.pid
+        sleep 0.5
+        if ! kill -0 "$snell_pid" 2>/dev/null; then
+            sed -i "s|\[::\]|0.0.0.0|g" /opt/suoha_quick/snell.conf
+            nohup /opt/suoha_quick/snell-server -c /opt/suoha_quick/snell.conf >/opt/suoha_quick/snell.log 2>&1 &
+            snell_pid=$!
+            echo $snell_pid > /opt/suoha_quick/snell.pid
             sleep 0.5
-            if kill -0 "$snell_v6_pid" 2>/dev/null; then
-                snell_v6_ok=1
-                snell_status="${snell_status}IPv6正常(端口:${port_snell_v6})"
-            else
-                snell_status="${snell_status}IPv6监听失败:$(cat /opt/suoha_quick/snell_v6.log 2>/dev/null | tr '\n' ' ')"
-            fi
+        fi
+        if kill -0 "$snell_pid" 2>/dev/null; then
+            snell_installed=1
+            snell_status="运行正常 (PID:${snell_pid} | 协议版本: v4)"
         fi
     fi
 
-    # 7. 原生直连拉起 Cloudflare Argo 双隧道 (直接指向 Xray 原生本地端口，无任何中间转发层)
-    show_progress 70 "正在获取机房归属并申请 Cloudflare Argo 双隧道..."
+    # 5. 自动探测出口 IP 协议栈并拉起双 Argo 隧道
+    show_progress 70 "正在探测服务器双栈公网 IP 与机房归属..."
+    local server_ip
+    server_ip=$(get_server_ip)
+    local server_ipv6
+    server_ipv6=$(get_server_ipv6)
+
     local ips=4
     if [ -z "$server_ip" ] && [ -n "$server_ipv6" ]; then
         ips=6
@@ -769,10 +533,9 @@ EOF
         node_tag="Suoha_Node"
     fi
 
-    # 先启动 VLESS Argo，间隔 1.5 秒再启动 Trojan Argo，避免同时并发触发 Cloudflare API 限流
+    show_progress 74 "正在建立 Cloudflare Argo 双协议临时隧道..."
     /opt/suoha_quick/cloudflared-linux tunnel --url "http://127.0.0.1:${port_argo_vl}" --no-autoupdate --edge-ip-version "$ips" --protocol http2 > /opt/suoha_quick/argo_vless.log 2>&1 &
     echo $! > /opt/suoha_quick/cf_vl.pid
-    sleep 1.5
 
     /opt/suoha_quick/cloudflared-linux tunnel --url "http://127.0.0.1:${port_argo_tr}" --no-autoupdate --edge-ip-version "$ips" --protocol http2 > /opt/suoha_quick/argo_trojan.log 2>&1 &
     echo $! > /opt/suoha_quick/cf_tr.pid
@@ -780,19 +543,18 @@ EOF
     local wait_sec=0
     local argo_vl=""
     local argo_tr=""
-    local argo_status=""
     while true; do
         wait_sec=$((wait_sec+1))
         argo_vl=$(grep -oE "https://[a-zA-Z0-9.-]+\.trycloudflare\.com" /opt/suoha_quick/argo_vless.log 2>/dev/null | head -n 1 | awk -F// '{print $2}')
         argo_tr=$(grep -oE "https://[a-zA-Z0-9.-]+\.trycloudflare\.com" /opt/suoha_quick/argo_trojan.log 2>/dev/null | head -n 1 | awk -F// '{print $2}')
 
         if [ -n "$argo_vl" ] && [ -n "$argo_tr" ]; then
-            argo_status="双隧道获取成功 (VLESS: ${argo_vl} | Trojan: ${argo_tr})"
+            rm -f /opt/suoha_quick/argo_vless.log /opt/suoha_quick/argo_trojan.log
             show_progress 92 "Argo 双协议隧道域名分配成功！"
             break
         fi
 
-        local dynamic_pct=$((72 + wait_sec))
+        local dynamic_pct=$((74 + wait_sec))
         if [ $dynamic_pct -gt 91 ]; then
             dynamic_pct=91
         fi
@@ -800,40 +562,25 @@ EOF
         local status_tr="等待中"
         [ -n "$argo_vl" ] && status_vl="已就绪"
         [ -n "$argo_tr" ] && status_tr="已就绪"
-        show_progress $dynamic_pct "等待 Argo 分配域名 (VLESS:${status_vl} | Trojan:${status_tr}) [${wait_sec}/22s]..."
+        show_progress $dynamic_pct "等待 Argo 分配域名 (VLESS:${status_vl} | Trojan:${status_tr}) [${wait_sec}s]..."
 
-        # 第 11 秒若有未就绪的隧道，切换 quic 协议重试
-        if [ $wait_sec -eq 11 ]; then
-            if [ -z "$argo_vl" ]; then
-                [ -f /opt/suoha_quick/cf_vl.pid ] && kill -9 "$(cat /opt/suoha_quick/cf_vl.pid)" >/dev/null 2>&1
-                rm -f /opt/suoha_quick/argo_vless.log
-                /opt/suoha_quick/cloudflared-linux tunnel --url "http://127.0.0.1:${port_argo_vl}" --no-autoupdate --edge-ip-version "$ips" --protocol quic > /opt/suoha_quick/argo_vless.log 2>&1 &
-                echo $! > /opt/suoha_quick/cf_vl.pid
-            fi
-            if [ -z "$argo_tr" ]; then
-                [ -f /opt/suoha_quick/cf_tr.pid ] && kill -9 "$(cat /opt/suoha_quick/cf_tr.pid)" >/dev/null 2>&1
-                rm -f /opt/suoha_quick/argo_trojan.log
-                /opt/suoha_quick/cloudflared-linux tunnel --url "http://127.0.0.1:${port_argo_tr}" --no-autoupdate --edge-ip-version "$ips" --protocol quic > /opt/suoha_quick/argo_trojan.log 2>&1 &
-                echo $! > /opt/suoha_quick/cf_tr.pid
-            fi
+        if [ $wait_sec -ge 25 ]; then
+            wait_sec=0
+            safe_kill_pidfile "/opt/suoha_quick/cf_vl.pid"
+            safe_kill_pidfile "/opt/suoha_quick/cf_tr.pid"
+            rm -f /opt/suoha_quick/argo_vless.log /opt/suoha_quick/argo_trojan.log
+            show_progress 75 "Argo 获取超时，正在自动重连建立双隧道..."
+            /opt/suoha_quick/cloudflared-linux tunnel --url "http://127.0.0.1:${port_argo_vl}" --no-autoupdate --edge-ip-version "$ips" --protocol http2 > /opt/suoha_quick/argo_vless.log 2>&1 &
+            echo $! > /opt/suoha_quick/cf_vl.pid
+            /opt/suoha_quick/cloudflared-linux tunnel --url "http://127.0.0.1:${port_argo_tr}" --no-autoupdate --edge-ip-version "$ips" --protocol http2 > /opt/suoha_quick/argo_trojan.log 2>&1 &
+            echo $! > /opt/suoha_quick/cf_tr.pid
+            sleep 2
+        else
+            sleep 1
         fi
-
-        if [ $wait_sec -ge 22 ]; then
-            if [ -n "$argo_vl" ] || [ -n "$argo_tr" ]; then
-                argo_status="部分就绪 (VLESS: ${argo_vl:-失败} | Trojan: ${argo_tr:-失败})"
-            else
-                local err_msg
-                err_msg=$(grep -iE "ERR|429|failed|error" /opt/suoha_quick/argo_vless.log /opt/suoha_quick/argo_trojan.log 2>/dev/null | head -n 1 | cut -c 1-90)
-                argo_status="获取失败 (${err_msg:-Cloudflare 429 频控限流，请等1-2分钟后重跑即可})"
-            fi
-            show_progress 92 "Argo 阶段结束，正在生成可用节点与订阅..."
-            sleep 0.5
-            break
-        fi
-        sleep 1
     done
 
-    # 8. 生成全协议节点链接与 Clash / Mihomo 配置文件
+    # 6. 生成全协议节点链接与 Clash / Mihomo 配置文件
     show_progress 95 "正在生成全协议 URI 链接与 Clash/Mihomo 聚合配置..."
     > /opt/suoha_quick/nodes.txt
     > /opt/suoha_quick/surge.conf
@@ -852,108 +599,16 @@ EOF
     local opt_domains=("cf.090227.xyz" "cloudflare.182682.xyz")
     local opt_labels=("优选cf.090227" "优选182682")
 
-    local direct_host=""
-    local direct_yaml_host=""
-    if [ -n "$server_ip" ]; then
-        direct_host="$server_ip"
-        direct_yaml_host="$server_ip"
-    elif [ -n "$server_ipv6" ]; then
-        direct_host="[${server_ipv6}]"
-        direct_yaml_host="$server_ipv6"
-    fi
-
-    # (A) VLESS + REALITY 三件套组合
-    local reality_summary=""
-    if [ -n "$direct_host" ]; then
-        local encoded_xhttp_path="%2Fxh-${short_id}"
-
-        # 方案一（主力首选）：VLESS + TCP + REALITY + Vision
-        local pname_rel_vision="${node_tag}-Reality-Vision-主力"
-        local uri_rel_vision="vless://${uuid}@${direct_host}:${port_rel_vision}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${reality_sni}&fp=chrome&pbk=${reality_pub}&sid=${reality_sid}&type=tcp&headerType=none#${pname_rel_vision}"
-        echo "$uri_rel_vision" >> /opt/suoha_quick/nodes.txt
-        proxy_names+=("$pname_rel_vision")
-        reality_summary+="[1. 主力首选 - TCP+Vision (端口:${port_rel_vision})]\n${uri_rel_vision}\n\n"
+    # (A) VLESS Argo 节点组
+    local vless_domains=("$argo_vl" "${opt_domains[@]}")
+    local vless_labels=("默认Argo" "${opt_labels[@]}")
+    for idx in "${!vless_domains[@]}"; do
+        local d="${vless_domains[$idx]}"
+        local l="${vless_labels[$idx]}"
+        local pname="${node_tag}-VLESS-${l}-443"
+        echo "vless://${uuid}@${d}:443?encryption=none&security=tls&sni=${argo_vl}&type=ws&host=${argo_vl}&path=%2F${urlpath_vless}#${pname}" >> /opt/suoha_quick/nodes.txt
+        proxy_names+=("$pname")
         cat >> /opt/suoha_quick/clash.yaml <<EOF
-  - name: "${pname_rel_vision}"
-    type: vless
-    server: ${direct_yaml_host}
-    port: ${port_rel_vision}
-    uuid: ${uuid}
-    network: tcp
-    tls: true
-    udp: true
-    flow: xtls-rprx-vision
-    servername: ${reality_sni}
-    reality-opts:
-      public-key: ${reality_pub}
-      short-id: ${reality_sid}
-      support-x25519mlkem768: false
-    client-fingerprint: chrome
-EOF
-
-        # 方案二（现代备用）：VLESS + XHTTP + REALITY
-        local pname_rel_xhttp="${node_tag}-Reality-XHTTP-备用"
-        local uri_rel_xhttp="vless://${uuid}@${direct_host}:${port_rel_xhttp}?encryption=none&security=reality&sni=${reality_sni}&fp=chrome&pbk=${reality_pub}&sid=${reality_sid}&type=xhttp&path=${encoded_xhttp_path}&mode=auto#${pname_rel_xhttp}"
-        echo "$uri_rel_xhttp" >> /opt/suoha_quick/nodes.txt
-        proxy_names+=("$pname_rel_xhttp")
-        reality_summary+="[2. 现代备用 - XHTTP抗QoS (端口:${port_rel_xhttp})]\n${uri_rel_xhttp}\n\n"
-        cat >> /opt/suoha_quick/clash.yaml <<EOF
-  - name: "${pname_rel_xhttp}"
-    type: vless
-    server: ${direct_yaml_host}
-    port: ${port_rel_xhttp}
-    uuid: ${uuid}
-    network: xhttp
-    tls: true
-    udp: true
-    servername: ${reality_sni}
-    xhttp-opts:
-      path: ${xhttp_path}
-      mode: auto
-    reality-opts:
-      public-key: ${reality_pub}
-      short-id: ${reality_sid}
-      support-x25519mlkem768: false
-    client-fingerprint: chrome
-EOF
-
-        # 方案三（老旧兼容/中转兜底）：VLESS + gRPC + REALITY
-        local pname_rel_grpc="${node_tag}-Reality-gRPC-兼容"
-        local uri_rel_grpc="vless://${uuid}@${direct_host}:${port_rel_grpc}?encryption=none&security=reality&sni=${reality_sni}&fp=chrome&pbk=${reality_pub}&sid=${reality_sid}&type=grpc&serviceName=${grpc_service}&mode=gun#${pname_rel_grpc}"
-        echo "$uri_rel_grpc" >> /opt/suoha_quick/nodes.txt
-        proxy_names+=("$pname_rel_grpc")
-        reality_summary+="[3. 兼容兜底 - gRPC中转 (端口:${port_rel_grpc})]\n${uri_rel_grpc}\n"
-        cat >> /opt/suoha_quick/clash.yaml <<EOF
-  - name: "${pname_rel_grpc}"
-    type: vless
-    server: ${direct_yaml_host}
-    port: ${port_rel_grpc}
-    uuid: ${uuid}
-    network: grpc
-    tls: true
-    udp: true
-    servername: ${reality_sni}
-    grpc-opts:
-      grpc-service-name: ${grpc_service}
-    reality-opts:
-      public-key: ${reality_pub}
-      short-id: ${reality_sid}
-      support-x25519mlkem768: false
-    client-fingerprint: chrome
-EOF
-    fi
-
-    # (B) VLESS Argo 节点组
-    if [ -n "$argo_vl" ]; then
-        local vless_domains=("$argo_vl" "${opt_domains[@]}")
-        local vless_labels=("默认Argo" "${opt_labels[@]}")
-        for idx in "${!vless_domains[@]}"; do
-            local d="${vless_domains[$idx]}"
-            local l="${vless_labels[$idx]}"
-            local pname="${node_tag}-VLESS-${l}-443"
-            echo "vless://${uuid}@${d}:443?encryption=none&security=tls&sni=${argo_vl}&type=ws&host=${argo_vl}&path=%2F${urlpath_vless}#${pname}" >> /opt/suoha_quick/nodes.txt
-            proxy_names+=("$pname")
-            cat >> /opt/suoha_quick/clash.yaml <<EOF
   - name: "${pname}"
     type: vless
     server: ${d}
@@ -969,20 +624,18 @@ EOF
       headers:
         Host: ${argo_vl}
 EOF
-        done
-    fi
+    done
 
-    # (C) Trojan Argo 节点组
-    if [ -n "$argo_tr" ]; then
-        local trojan_domains=("$argo_tr" "${opt_domains[@]}")
-        local trojan_labels=("默认Argo" "${opt_labels[@]}")
-        for idx in "${!trojan_domains[@]}"; do
-            local d="${trojan_domains[$idx]}"
-            local l="${trojan_labels[$idx]}"
-            local pname="${node_tag}-Trojan-${l}-443"
-            echo "trojan://${uuid}@${d}:443?security=tls&sni=${argo_tr}&type=ws&host=${argo_tr}&path=%2F${urlpath_trojan}#${pname}" >> /opt/suoha_quick/nodes.txt
-            proxy_names+=("$pname")
-            cat >> /opt/suoha_quick/clash.yaml <<EOF
+    # (B) Trojan Argo 节点组
+    local trojan_domains=("$argo_tr" "${opt_domains[@]}")
+    local trojan_labels=("默认Argo" "${opt_labels[@]}")
+    for idx in "${!trojan_domains[@]}"; do
+        local d="${trojan_domains[$idx]}"
+        local l="${trojan_labels[$idx]}"
+        local pname="${node_tag}-Trojan-${l}-443"
+        echo "trojan://${uuid}@${d}:443?security=tls&sni=${argo_tr}&type=ws&host=${argo_tr}&path=%2F${urlpath_trojan}#${pname}" >> /opt/suoha_quick/nodes.txt
+        proxy_names+=("$pname")
+        cat >> /opt/suoha_quick/clash.yaml <<EOF
   - name: "${pname}"
     type: trojan
     server: ${d}
@@ -996,11 +649,42 @@ EOF
       headers:
         Host: ${argo_tr}
 EOF
-        done
+    done
+
+    # 确定直连连接地址
+    local direct_host=""
+    local direct_yaml_host=""
+    if [ -n "$server_ip" ]; then
+        direct_host="$server_ip"
+        direct_yaml_host="$server_ip"
+    elif [ -n "$server_ipv6" ]; then
+        direct_host="[${server_ipv6}]"
+        direct_yaml_host="$server_ipv6"
     fi
 
     if [ -n "$direct_host" ]; then
-        # (D) AnyTLS 直连节点
+        # (C) VLESS Reality Vision 直连节点
+        local pname_rel="${node_tag}-VLESS-Reality"
+        echo "vless://${uuid}@${direct_host}:${port_reality}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.bing.com&fp=chrome&pbk=${reality_pub}&sid=${reality_sid}&type=tcp&headerType=none#${pname_rel}" >> /opt/suoha_quick/nodes.txt
+        proxy_names+=("$pname_rel")
+        cat >> /opt/suoha_quick/clash.yaml <<EOF
+  - name: "${pname_rel}"
+    type: vless
+    server: ${direct_yaml_host}
+    port: ${port_reality}
+    uuid: ${uuid}
+    network: tcp
+    tls: true
+    udp: true
+    flow: xtls-rprx-vision
+    servername: www.bing.com
+    reality-opts:
+      public-key: ${reality_pub}
+      short-id: ${reality_sid}
+    client-fingerprint: chrome
+EOF
+
+        # (D) AnyTLS 直连节点 (自签 www.bing.com)
         local pname_any="${node_tag}-AnyTLS-Bing"
         echo "anytls://${password_all}@${direct_host}:${port_anytls}?sni=www.bing.com&insecure=1#${pname_any}" >> /opt/suoha_quick/nodes.txt
         proxy_names+=("$pname_any")
@@ -1016,7 +700,7 @@ EOF
     skip-cert-verify: true
 EOF
 
-        # (E) Hysteria2 直连节点
+        # (E) Hysteria2 直连节点 (自签 www.bing.com)
         local pname_hy2="${node_tag}-Hysteria2-Bing"
         echo "hysteria2://${password_all}@${direct_host}:${port_hy2}?sni=www.bing.com&insecure=1#${pname_hy2}" >> /opt/suoha_quick/nodes.txt
         proxy_names+=("$pname_hy2")
@@ -1032,7 +716,7 @@ EOF
       - h3
 EOF
 
-        # (F) TUIC v5 直连节点
+        # (F) TUIC v5 直连节点 (自签 www.bing.com)
         local pname_tuic="${node_tag}-TUICv5-Bing"
         echo "tuic://${uuid}:${password_all}@${direct_host}:${port_tuic}?congestion_control=bbr&alpn=h3&sni=www.bing.com&udp_relay_mode=native&allow_insecure=1#${pname_tuic}" >> /opt/suoha_quick/nodes.txt
         proxy_names+=("$pname_tuic")
@@ -1054,65 +738,42 @@ EOF
 EOF
     fi
 
-    # (G) 原生 Shadowsocks IPv6 直连节点
-    local ss_v6_uri=""
-    if [ -n "$server_ipv6" ]; then
-        local ss_user_info="${ss_method}:${ss_password}"
-        local ss_base64=""
-        if [ "$OS_NAME" == "Alpine" ]; then
-            ss_base64=$(echo -n "$ss_user_info" | base64 | tr -d '\n')
-        else
-            ss_base64=$(echo -n "$ss_user_info" | base64 -w 0)
-        fi
-        local pname_ss6="${node_tag}-SS-IPv6"
-        ss_v6_uri="ss://${ss_base64}@[${server_ipv6}]:${port_ss_v6}#${pname_ss6}"
-        echo "$ss_v6_uri" >> /opt/suoha_quick/nodes.txt
-        proxy_names+=("$pname_ss6")
-        cat >> /opt/suoha_quick/clash.yaml <<EOF
-  - name: "${pname_ss6}"
-    type: ss
-    server: "${server_ipv6}"
-    port: ${port_ss_v6}
-    cipher: ${ss_method}
-    password: "${ss_password}"
-    udp: true
-EOF
-    fi
-
-    # (H) Snell 独立双栈节点
+    # (G) Snell 节点 (固定使用 version: 4 保证 Clash Verge Rev 100% 零报错导入)
     local snell_display_lines=""
-    if [ $snell_v4_ok -eq 1 ]; then
-        local pname_snell_v4="${node_tag}-Snell-IPv4"
-        proxy_names+=("$pname_snell_v4")
-        cat >> /opt/suoha_quick/clash.yaml <<EOF
+    if [ $snell_installed -eq 1 ]; then
+        if [ -n "$server_ip" ]; then
+            local pname_snell_v4="${node_tag}-Snell-IPv4"
+            proxy_names+=("$pname_snell_v4")
+            cat >> /opt/suoha_quick/clash.yaml <<EOF
   - name: "${pname_snell_v4}"
     type: snell
     server: ${server_ip}
-    port: ${port_snell_v4}
+    port: ${port_snell}
     psk: "${snell_psk}"
     version: 4
     udp: true
 EOF
-        local surge_v4="${pname_snell_v4} = snell, ${server_ip}, ${port_snell_v4}, psk=${snell_psk}, version=4, reuse=true"
-        echo "$surge_v4" >> /opt/suoha_quick/surge.conf
-        snell_display_lines+="${surge_v4}\n"
-    fi
+            local surge_v4="${pname_snell_v4} = snell, ${server_ip}, ${port_snell}, psk=${snell_psk}, version=4, reuse=true"
+            echo "$surge_v4" >> /opt/suoha_quick/surge.conf
+            snell_display_lines+="${surge_v4}\n"
+        fi
 
-    if [ $snell_v6_ok -eq 1 ]; then
-        local pname_snell_v6="${node_tag}-Snell-IPv6"
-        proxy_names+=("$pname_snell_v6")
-        cat >> /opt/suoha_quick/clash.yaml <<EOF
+        if [ -n "$server_ipv6" ]; then
+            local pname_snell_v6="${node_tag}-Snell-IPv6"
+            proxy_names+=("$pname_snell_v6")
+            cat >> /opt/suoha_quick/clash.yaml <<EOF
   - name: "${pname_snell_v6}"
     type: snell
     server: "${server_ipv6}"
-    port: ${port_snell_v6}
+    port: ${port_snell}
     psk: "${snell_psk}"
     version: 4
     udp: true
 EOF
-        local surge_v6="${pname_snell_v6} = snell, ${server_ipv6}, ${port_snell_v6}, psk=${snell_psk}, version=4, reuse=true"
-        echo "$surge_v6" >> /opt/suoha_quick/surge.conf
-        snell_display_lines+="${surge_v6}\n"
+            local surge_v6="${pname_snell_v6} = snell, ${server_ipv6}, ${port_snell}, psk=${snell_psk}, version=4, reuse=true"
+            echo "$surge_v6" >> /opt/suoha_quick/surge.conf
+            snell_display_lines+="${surge_v6}\n"
+        fi
     fi
 
     cat >> /opt/suoha_quick/clash.yaml <<EOF
@@ -1144,7 +805,7 @@ EOF
     elif [ -n "$server_ipv6" ]; then
         sub_host="[${server_ipv6}]"
     else
-        sub_host="${argo_vl:-127.0.0.1}"
+        sub_host="$argo_vl"
     fi
 
     local sub_port
@@ -1156,25 +817,17 @@ EOF
     local clash_online_url="http://${sub_host}:${sub_port}/clash.yaml"
 
     cat > /opt/suoha_quick/v2ray.txt <<EOF
-======================== 服务器双栈网络与服务诊断 ========================
-公网 IPv4: ${server_ip:-无} | 公网 IPv6 (出站实测): ${server_ipv6:-无可用 IPv6 出站}
-Argo 隧道: ${argo_status}
-Xray 状态: ${xray_status}
-Snell 状态: ${snell_status:-未安装}
-
-======================== VLESS + REALITY 三件套组合 ========================
-共用参数 -> UUID: ${uuid} | SNI: ${reality_sni} | PublicKey: ${reality_pub} | ShortID: ${reality_sid}
-已分配端口 -> Vision:${port_rel_vision} | XHTTP:${port_rel_xhttp} | gRPC:${port_rel_grpc}
-
-$(echo -e "${reality_summary:-未检测到可用公网 IP，跳过 Reality 直连生成}")
-======================== Shadowsocks IPv6 直连节点 ========================
-${ss_v6_uri:-未检测到可用公网 IPv6 出站，跳过 SS-IPv6 生成}
-
-======================== 全协议节点汇总 (含 Argo / AnyTLS / HY2 / TUIC / SS-IPv6) ========================
+======================== 一键全协议梭哈节点列表 ========================
+[URI 通用节点链接 (VLESS-Argo / Trojan-Argo / Reality / AnyTLS / HY2 / TUIC)]
 $(cat /opt/suoha_quick/nodes.txt)
 
-[Snell 双栈独立配置]
+[Snell 专属配置 (Surge / Clash Verge / Mihomo) | 状态: ${snell_status}]
 $(echo -e "${snell_display_lines:-未检测到可用公网 IP，跳过 Snell 生成}")
+======================== 端口与证书说明 ========================
+- Argo 节点 443 端口可按需替换为 CF 其它 TLS 端口: 2053, 2083, 2087, 2096, 8443
+- AnyTLS / Hysteria2 / TUIC 均已自动签发 www.bing.com 证书 (客户端需开启跳过证书验证)
+- VLESS Reality 伪装域名: www.bing.com | PublicKey: ${reality_pub} | ShortID: ${reality_sid}
+
 ======================== 客户端订阅及导入链接 ========================
 本机固定订阅服务端口: ${sub_port} (已永久保存，重新梭哈无需重新导入客户端)
 
