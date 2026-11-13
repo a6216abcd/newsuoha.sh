@@ -1,5 +1,5 @@
 #!/bin/bash
-# onekey suoha - Full Protocol Edition (Argo + Reality[Vision/XHTTP/gRPC] + AnyTLS + HY2 + TUIC + Snell[IPv4/IPv6] + SS-IPv6)
+# onekey suoha - Full Protocol Edition (Argo + Reality[Vision/XHTTP/gRPC] + AnyTLS + HY2 + TUIC + Snell双栈 + SS-IPv6)
 
 export PATH=$PATH:/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin
 
@@ -95,9 +95,6 @@ function get_server_ipv6() {
     ip6=$(curl -s6 --connect-timeout 3 https://api64.ipify.org 2>/dev/null | tr -d '\n\r ')
     if [ -z "$ip6" ]; then
         ip6=$(curl -s6 --connect-timeout 3 https://ipv6.icanhazip.com 2>/dev/null | tr -d '\n\r ')
-    fi
-    if [ -z "$ip6" ]; then
-        ip6=$(ip -6 addr show scope global 2>/dev/null | grep inet6 | awk '{print $2}' | cut -d/ -f1 | head -n 1 | tr -d '\n\r ')
     fi
     echo "$ip6"
 }
@@ -339,40 +336,32 @@ function quicktunnel_all_in_one() {
         exit 1
     fi
 
-    # 2. 探测服务器公网 IPv4 与 IPv6
-    show_progress 48 "正在探测服务器双栈公网 IP..."
+    # 2. 探测服务器公网 IPv4 与 真实可出站的 IPv6
+    show_progress 48 "正在探测服务器双栈公网 IP 与出站连通性..."
     local server_ip
     server_ip=$(get_server_ip)
     local server_ipv6
     server_ipv6=$(get_server_ipv6)
 
-    # 3. 生成自签名 www.bing.com 证书，并直接调用 xray x25519 生成原生配对密钥
-    show_progress 52 "正在自签 TLS 证书与生成 Xray 原生 Reality X25519 密钥..."
+    # 3. 生成自签名 www.bing.com 证书，使用 sing-box 生成标准的 43 位 X25519 密钥对 (Xray 与 Mihomo 通用标准格式)
+    show_progress 52 "正在自签 TLS 证书与生成标准 Reality X25519 密钥对..."
     openssl ecparam -genkey -name prime256v1 -out /opt/suoha_quick/cert/bing.key >/dev/null 2>&1
     openssl req -new -x509 -days 3650 -key /opt/suoha_quick/cert/bing.key \
         -out /opt/suoha_quick/cert/bing.crt \
         -subj "/C=US/ST=Washington/L=Redmond/O=Microsoft Corporation/CN=www.bing.com" \
         -addext "subjectAltName=DNS:www.bing.com,DNS:bing.com" >/dev/null 2>&1
 
-    # Xray v25/v26+ 输出格式: PrivateKey: xxx / Password: yyy (Password 即客户端 PublicKey)
     local reality_keys
-    reality_keys=$(/opt/suoha_quick/xray x25519)
+    reality_keys=$(/opt/suoha_quick/sing-box generate reality-keypair)
     local reality_priv
-    reality_priv=$(echo "$reality_keys" | awk -F': ' '/PrivateKey:|Private key:/ {print $2}' | tr -d ' \r\n' | head -n 1)
+    reality_priv=$(echo "$reality_keys" | grep -i "PrivateKey" | cut -d':' -f2 | tr -d ' \r\n')
     local reality_pub
-    reality_pub=$(echo "$reality_keys" | awk -F': ' '/Password:|PublicKey:|Public key:/ {print $2}' | tr -d ' \r\n' | head -n 1)
-
-    if [[ -z "$reality_priv" || -z "$reality_pub" ]]; then
-        reality_keys=$(/opt/suoha_quick/sing-box generate reality-keypair)
-        reality_priv=$(echo "$reality_keys" | awk -F': ' '/PrivateKey:/ {print $2}' | tr -d ' \r\n' | head -n 1)
-        reality_pub=$(echo "$reality_keys" | awk -F': ' '/PublicKey:/ {print $2}' | tr -d ' \r\n' | head -n 1)
-    fi
-
+    reality_pub=$(echo "$reality_keys" | grep -i "PublicKey" | cut -d':' -f2 | tr -d ' \r\n')
     local reality_sid
     reality_sid=$(openssl rand -hex 8)
 
-    # 选用全球全区域 100% 支持 TLS 1.3 + H2 + X25519 的微软域名作为 Reality 伪装目标
-    local reality_sni="learn.microsoft.com"
+    # 选用全球全区域支持 TLS 1.3 + H2 + X25519 的微软官方域名作为 Reality 伪装目标
+    local reality_sni="www.microsoft.com"
 
     # 4. 分配端口与凭证
     local uuid
@@ -417,12 +406,11 @@ function quicktunnel_all_in_one() {
     open_firewall_port "$port_snell_v6"
     open_firewall_port "$port_ss_v6"
 
-    # 5. 生成 Xray 多入站 Reality 配置文件 (使用单入站 listen: "::" 自动兼容双栈，避免双入站抢占同一端口冲突)
+    # 5. 生成 Xray 多入站 Reality 配置文件
+    # 注意: Xray 25/26+ 中 network 可写 tcp 或 raw，此处使用 tcp 兼容全版本；xhttp 使用 auto 模式与 Mihomo 默认兼容
     show_progress 58 "正在写入 Xray Reality (Vision + XHTTP + gRPC) 三件套配置..."
     local xray_listen="0.0.0.0"
-    if [ -n "$server_ipv6" ] && [ "$(sysctl -n net.ipv6.bindv6only 2>/dev/null)" == "0" ]; then
-        xray_listen="::"
-    elif [ -z "$server_ip" ] && [ -n "$server_ipv6" ]; then
+    if [ -z "$server_ip" ] && [ -n "$server_ipv6" ]; then
         xray_listen="::"
     fi
 
@@ -488,7 +476,7 @@ function quicktunnel_all_in_one() {
         "network": "xhttp",
         "xhttpSettings": {
           "path": "${xhttp_path}",
-          "mode": "packet-up"
+          "mode": "auto"
         },
         "security": "reality",
         "realitySettings": {
@@ -709,7 +697,7 @@ EOF
         xray_status="启动失败! 错误日志: $(cat /opt/suoha_quick/xray.log 2>/dev/null | tr '\n' ' ')"
     fi
 
-    # 启动独立 IPv4 与 IPv6 双 Snell 实例，避免单套接字绑定冲突
+    # 启动独立 IPv4 与 IPv6 双 Snell 实例
     local snell_psk
     snell_psk=$(openssl rand -base64 24 | tr -dc 'a-zA-Z0-9' | head -c 24)
     local snell_v4_ok=0
@@ -846,7 +834,7 @@ EOF
         direct_yaml_host="$server_ipv6"
     fi
 
-    # (A) VLESS + REALITY 三件套组合 (严格匹配 Mihomo YAML 语法)
+    # (A) VLESS + REALITY 三件套组合 (严格匹配 Mihomo YAML 官方结构)
     local reality_summary=""
     if [ -n "$direct_host" ]; then
         local encoded_xhttp_path="%2Fxh-${short_id}"
@@ -871,12 +859,13 @@ EOF
     reality-opts:
       public-key: ${reality_pub}
       short-id: ${reality_sid}
+      support-x25519mlkem768: false
     client-fingerprint: chrome
 EOF
 
-        # 方案二（现代备用）：VLESS + XHTTP + REALITY (对齐 Mihomo packet-up 模式)
+        # 方案二（现代备用）：VLESS + XHTTP + REALITY
         local pname_rel_xhttp="${node_tag}-Reality-XHTTP-备用"
-        local uri_rel_xhttp="vless://${uuid}@${direct_host}:${port_rel_xhttp}?encryption=none&security=reality&sni=${reality_sni}&fp=chrome&pbk=${reality_pub}&sid=${reality_sid}&type=xhttp&path=${encoded_xhttp_path}&mode=packet-up#${pname_rel_xhttp}"
+        local uri_rel_xhttp="vless://${uuid}@${direct_host}:${port_rel_xhttp}?encryption=none&security=reality&sni=${reality_sni}&fp=chrome&pbk=${reality_pub}&sid=${reality_sid}&type=xhttp&path=${encoded_xhttp_path}&mode=auto#${pname_rel_xhttp}"
         echo "$uri_rel_xhttp" >> /opt/suoha_quick/nodes.txt
         proxy_names+=("$pname_rel_xhttp")
         reality_summary+="[2. 现代备用 - XHTTP抗QoS (端口:${port_rel_xhttp})]\n${uri_rel_xhttp}\n\n"
@@ -892,10 +881,11 @@ EOF
     servername: ${reality_sni}
     xhttp-opts:
       path: ${xhttp_path}
-      mode: packet-up
+      mode: auto
     reality-opts:
       public-key: ${reality_pub}
       short-id: ${reality_sid}
+      support-x25519mlkem768: false
     client-fingerprint: chrome
 EOF
 
@@ -920,6 +910,7 @@ EOF
     reality-opts:
       public-key: ${reality_pub}
       short-id: ${reality_sid}
+      support-x25519mlkem768: false
     client-fingerprint: chrome
 EOF
     fi
@@ -1056,7 +1047,7 @@ EOF
 EOF
     fi
 
-    # (H) Snell 独立双栈节点 (分别独立端口运行)
+    # (H) Snell 独立双栈节点
     local snell_display_lines=""
     if [ $snell_v4_ok -eq 1 ]; then
         local pname_snell_v4="${node_tag}-Snell-IPv4"
@@ -1133,19 +1124,23 @@ EOF
     local clash_online_url="http://${sub_host}:${sub_port}/clash.yaml"
 
     cat > /opt/suoha_quick/v2ray.txt <<EOF
-======================== VLESS + REALITY 三件套组合 ========================
+======================== 服务器双栈网络与服务诊断 ========================
+公网 IPv4: ${server_ip:-无} | 公网 IPv6 (出站实测): ${server_ipv6:-无可用 IPv6 出站}
 Xray 状态: ${xray_status}
+Snell 状态: ${snell_status:-未安装}
+
+======================== VLESS + REALITY 三件套组合 ========================
 共用参数 -> UUID: ${uuid} | SNI: ${reality_sni} | PublicKey: ${reality_pub} | ShortID: ${reality_sid}
 已分配端口 -> Vision:${port_rel_vision} | XHTTP:${port_rel_xhttp} | gRPC:${port_rel_grpc}
 
 $(echo -e "${reality_summary:-未检测到可用公网 IP，跳过 Reality 直连生成}")
 ======================== Shadowsocks IPv6 直连节点 ========================
-${ss_v6_uri:-未检测到公网 IPv6 地址，跳过 SS-IPv6 生成}
+${ss_v6_uri:-未检测到可用公网 IPv6 出站，跳过 SS-IPv6 生成}
 
 ======================== 全协议节点汇总 (含 Argo / AnyTLS / HY2 / TUIC / SS-IPv6) ========================
 $(cat /opt/suoha_quick/nodes.txt)
 
-[Snell 双栈独立配置 | 状态: ${snell_status:-未安装}]
+[Snell 双栈独立配置]
 $(echo -e "${snell_display_lines:-未检测到可用公网 IP，跳过 Snell 生成}")
 ======================== 客户端订阅及导入链接 ========================
 本机固定订阅服务端口: ${sub_port} (已永久保存，重新梭哈无需重新导入客户端)
