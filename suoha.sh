@@ -1,5 +1,5 @@
 #!/bin/bash
-# onekey suoha - Full Protocol Edition (单Argo双路径 + Sing-box全内核[Reality Vision/XHTTP/gRPC + AnyTLS + HY2 + TUIC + SS-IPv6] + Snell双栈)
+# onekey suoha - Full Protocol Edition (sing-box-extended 魔改单内核原生支持 XHTTP + Reality三件套 + 单Argo双路径 + AnyTLS + HY2 + TUIC + Snell双栈 + SS-IPv6)
 
 export PATH=$PATH:/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin
 
@@ -181,6 +181,7 @@ function sync_to_static_web() {
 
 function stop_all_services() {
     safe_kill_pidfile "/opt/suoha_quick/singbox.pid"
+    safe_kill_pidfile "/opt/suoha_quick/xray.pid"
     safe_kill_pidfile "/opt/suoha_quick/cf_main.pid"
     safe_kill_pidfile "/opt/suoha_quick/cf_vl.pid"
     safe_kill_pidfile "/opt/suoha_quick/cf_tr.pid"
@@ -190,9 +191,9 @@ function stop_all_services() {
     safe_kill_pidfile "/opt/suoha_quick/sub_http.pid"
 
     if command -v killall >/dev/null 2>&1; then
-        killall -9 sing-box cloudflared-linux snell-server snell-server-v6 >/dev/null 2>&1
+        killall -9 sing-box xray cloudflared-linux snell-server snell-server-v6 >/dev/null 2>&1
     else
-        for bin_name in sing-box cloudflared-linux snell-server snell-server-v6; do
+        for bin_name in sing-box xray cloudflared-linux snell-server snell-server-v6; do
             for pid in $(pidof "$bin_name" 2>/dev/null); do
                 if [ "$pid" != "$$" ] && [ "$pid" != "$PPID" ]; then
                     kill -9 "$pid" >/dev/null 2>&1
@@ -229,7 +230,7 @@ fi
 function quicktunnel_all_in_one() {
     clear
     echo -e "${CYAN}==================================================================${NC}"
-    echo -e "${GREEN}   一键全协议梭哈部署启动中 (单Argo双路径 + Sing-box全协议[Reality Vision/XHTTP/gRPC] + Snell双栈 + SS-IPv6)${NC}"
+    echo -e "${GREEN}   一键全协议梭哈部署启动中 (sing-box-extended 魔改内核原生 XHTTP 版)${NC}"
     echo -e "${CYAN}==================================================================${NC}\n"
 
     show_progress 1 "初始化运行环境并彻底清空旧进程与历史文件..."
@@ -240,7 +241,7 @@ function quicktunnel_all_in_one() {
     mkdir -p /opt/suoha_quick/cert >/dev/null 2>&1
     cd /opt/suoha_quick || exit 1
 
-    # 1. 架构识别与核心二进制下载
+    # 1. 架构识别与第三方魔改 sing-box-extended 核心下载 (原生移植 Xray XHTTP + REALITY)
     local arch_sb=""
     local arch_cf=""
     local arch_snell=""
@@ -272,18 +273,29 @@ function quicktunnel_all_in_one() {
             ;;
     esac
 
-    show_progress 15 "正在获取最新 Sing-box 版本号..."
-    local sb_version
-    sb_version=$(curl -s https://api.github.com/repos/SagerNet/sing-box/releases/latest | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
-    if [ -z "$sb_version" ]; then
-        sb_version="1.12.12"
+    show_progress 15 "正在获取 shtorm-7/sing-box-extended 魔改内核最新版本..."
+    local sb_ext_url=""
+    sb_ext_url=$(curl -s "https://api.github.com/repos/shtorm-7/sing-box-extended/releases/latest" | grep -oE "https://github\.com/shtorm-7/sing-box-extended/releases/download/[^\"]*${arch_sb}\.tar\.gz" | head -n 1)
+
+    show_progress 22 "正在下载 sing-box-extended 魔改核心 (原生支持 XHTTP)..."
+    if [ -n "$sb_ext_url" ]; then
+        curl -sL "$sb_ext_url" -o sb.tar.gz
     fi
 
-    show_progress 22 "正在下载 Sing-box v${sb_version} 核心..."
-    curl -sL "https://github.com/SagerNet/sing-box/releases/download/v${sb_version}/sing-box-${sb_version}-${arch_sb}.tar.gz" -o sb.tar.gz
-    tar -xzf sb.tar.gz >/dev/null 2>&1
-    mv "sing-box-${sb_version}-${arch_sb}/sing-box" /opt/suoha_quick/sing-box 2>/dev/null
-    rm -rf "sing-box-${sb_version}-${arch_sb}" sb.tar.gz
+    # 若主仓下载失败或架构未命中，自动使用 sing-box-extended-lite 稳定版镜像兜底 (同样完整保留 XHTTP + REALITY)
+    if [ ! -s sb.tar.gz ] || ! tar -tzf sb.tar.gz >/dev/null 2>&1; then
+        rm -f sb.tar.gz
+        curl -sL "https://github.com/yandexru45/sing-box-extended-lite/releases/latest/download/sing-box-extended-lite-${arch_sb}.tar.gz" -o sb.tar.gz
+    fi
+
+    mkdir -p /opt/suoha_quick/tmp_sb
+    tar -xzf sb.tar.gz -C /opt/suoha_quick/tmp_sb >/dev/null 2>&1
+    local found_bin
+    found_bin=$(find /opt/suoha_quick/tmp_sb -type f -name "sing-box" | head -n 1)
+    if [ -n "$found_bin" ]; then
+        mv "$found_bin" /opt/suoha_quick/sing-box
+    fi
+    rm -rf /opt/suoha_quick/tmp_sb sb.tar.gz
 
     show_progress 34 "正在下载 Cloudflare Argo 隧道组件..."
     curl -sL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-${arch_cf}" -o /opt/suoha_quick/cloudflared-linux
@@ -299,9 +311,12 @@ function quicktunnel_all_in_one() {
     [ -f /opt/suoha_quick/snell-server ] && chmod +x /opt/suoha_quick/snell-server
 
     if [ ! -x /opt/suoha_quick/sing-box ] || [ ! -x /opt/suoha_quick/cloudflared-linux ]; then
-        echo -e "\n${RED}核心文件下载失败，请检查服务器网络连接（GitHub 访问是否正常）！${NC}"
+        echo -e "\n${RED}魔改内核或组件下载失败，请检查服务器网络连接（GitHub 访问是否正常）！${NC}"
         exit 1
     fi
+
+    local sb_core_ver
+    sb_core_ver=$(/opt/suoha_quick/sing-box version 2>/dev/null | head -n 1)
 
     # 2. 探测服务器公网 IPv4 与 IPv6
     show_progress 48 "正在探测服务器双栈公网 IP..."
@@ -363,9 +378,8 @@ function quicktunnel_all_in_one() {
     open_firewall_port "$port_snell"
     open_firewall_port "$port_ss_v6"
 
-    # 5. 生成 Sing-box 全协议统一配置文件 (内置 Reality Vision / Reality XHTTP / Reality gRPC)
-    show_progress 60 "正在写入 Sing-box 全协议 (含 Reality Vision/XHTTP/gRPC) 与 Snell 配置文件..."
-    local xhttp_transport_type="xhttp"
+    # 5. 生成 sing-box-extended 全协议统一配置文件 (原生包含 xhttp 与 grpc 的 Reality 入站)
+    show_progress 60 "正在写入 sing-box-extended 全协议 (原生 XHTTP + Reality 三件套) 配置..."
     cat > /opt/suoha_quick/singbox.json <<EOF
 {
   "log": {
@@ -442,7 +456,8 @@ function quicktunnel_all_in_one() {
       ],
       "transport": {
         "type": "xhttp",
-        "path": "${xhttp_path}"
+        "path": "${xhttp_path}",
+        "mode": "auto"
       },
       "tls": {
         "enabled": true,
@@ -577,15 +592,10 @@ function quicktunnel_all_in_one() {
 }
 EOF
 
-    # 校验 Sing-box 配置是否支持 xhttp；若当前核心暂未内置 xhttp 则自动平滑回退为 httpupgrade，确保 100% 启动成功
-    if ! /opt/suoha_quick/sing-box check -c /opt/suoha_quick/singbox.json >/dev/null 2>&1; then
-        xhttp_transport_type="httpupgrade"
-        sed -i 's/"type": "xhttp"/"type": "httpupgrade"/g' /opt/suoha_quick/singbox.json
-    fi
-
-    show_progress 66 "正在启动 Sing-box、本地路径分流器与 Snell 双栈守护进程..."
+    show_progress 66 "正在启动 sing-box-extended 魔改核心、本地分流器与 Snell 双栈守护进程..."
     nohup /opt/suoha_quick/sing-box run -c /opt/suoha_quick/singbox.json >/opt/suoha_quick/singbox.log 2>&1 &
-    echo $! > /opt/suoha_quick/singbox.pid
+    local sb_pid=$!
+    echo $sb_pid > /opt/suoha_quick/singbox.pid
 
     # 轻量本地 WebSocket 路径分流守护进程 (单 Argo 域名按请求路径分发 /vl-xxx 与 /tr-xxx)
     cat > /opt/suoha_quick/argo_router.py <<EOF
@@ -638,7 +648,7 @@ EOF
     nohup python3 /opt/suoha_quick/argo_router.py >/dev/null 2>&1 &
     echo $! > /opt/suoha_quick/argo_router.pid
 
-    # 启动 Snell 双栈监听 (使用 ::0:端口 语法确保 IPv4 + IPv6 同步监听)
+    # 启动 Snell 双栈监听
     local snell_psk
     snell_psk=$(openssl rand -base64 24 | tr -dc 'a-zA-Z0-9' | head -c 24)
     local snell_installed=0
@@ -669,6 +679,11 @@ EOF
             listen_info=$(ss -tlpn 2>/dev/null | grep "pid=${snell_pid}" | awk '{print $4}' | tr '\n' ' ')
             snell_status="运行正常 (PID:${snell_pid} | 监听:${listen_info:-::0:${port_snell}})"
         fi
+    fi
+
+    local sb_status="运行正常 (PID:${sb_pid})"
+    if ! kill -0 "$sb_pid" 2>/dev/null; then
+        sb_status="异常: $(cat /opt/suoha_quick/singbox.log 2>/dev/null | tr '\n' ' ')"
     fi
 
     # 6. 拉起单个 Cloudflare Argo 隧道 (双协议共用同一 Argo 域名)
@@ -743,7 +758,7 @@ EOF
     local argo_domains=("$argo_domain" "${opt_domains[@]}")
     local argo_labels=("默认Argo" "${opt_labels[@]}")
 
-    # (A) VLESS Argo 节点组 (使用路径 /${urlpath_vless})
+    # (A) VLESS Argo 节点组
     for idx in "${!argo_domains[@]}"; do
         local d="${argo_domains[$idx]}"
         local l="${argo_labels[$idx]}"
@@ -768,7 +783,7 @@ EOF
 EOF
     done
 
-    # (B) Trojan Argo 节点组 (共用同一 Argo 域名，使用路径 /${urlpath_trojan})
+    # (B) Trojan Argo 节点组
     for idx in "${!argo_domains[@]}"; do
         local d="${argo_domains[$idx]}"
         local l="${argo_labels[$idx]}"
@@ -806,7 +821,7 @@ EOF
         local encoded_xhttp_path="%2Fxh-${short_id}"
 
         # (C1) VLESS Reality Vision 直连节点 (主力首选)
-        local pname_rel="${node_tag}-VLESS-Reality"
+        local pname_rel="${node_tag}-VLESS-Reality-Vision"
         echo "vless://${uuid}@${direct_host}:${port_reality}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.bing.com&fp=chrome&pbk=${reality_pub}&sid=${reality_sid}&type=tcp&headerType=none#${pname_rel}" >> /opt/suoha_quick/nodes.txt
         proxy_names+=("$pname_rel")
         cat >> /opt/suoha_quick/clash.yaml <<EOF
@@ -826,12 +841,11 @@ EOF
     client-fingerprint: chrome
 EOF
 
-        # (C2) VLESS + XHTTP + REALITY 直连节点 (现代备用)
+        # (C2) VLESS + XHTTP + REALITY 直连节点 (由 sing-box-extended 原生提供)
         local pname_rel_xhttp="${node_tag}-VLESS-Reality-XHTTP"
-        if [ "$xhttp_transport_type" == "xhttp" ]; then
-            echo "vless://${uuid}@${direct_host}:${port_rel_xhttp}?encryption=none&security=reality&sni=www.bing.com&fp=chrome&pbk=${reality_pub}&sid=${reality_sid}&type=xhttp&path=${encoded_xhttp_path}&mode=auto#${pname_rel_xhttp}" >> /opt/suoha_quick/nodes.txt
-            proxy_names+=("$pname_rel_xhttp")
-            cat >> /opt/suoha_quick/clash.yaml <<EOF
+        echo "vless://${uuid}@${direct_host}:${port_rel_xhttp}?encryption=none&security=reality&sni=www.bing.com&fp=chrome&pbk=${reality_pub}&sid=${reality_sid}&type=xhttp&path=${encoded_xhttp_path}&mode=auto#${pname_rel_xhttp}" >> /opt/suoha_quick/nodes.txt
+        proxy_names+=("$pname_rel_xhttp")
+        cat >> /opt/suoha_quick/clash.yaml <<EOF
   - name: "${pname_rel_xhttp}"
     type: vless
     server: ${direct_yaml_host}
@@ -849,30 +863,8 @@ EOF
       short-id: ${reality_sid}
     client-fingerprint: chrome
 EOF
-        else
-            echo "vless://${uuid}@${direct_host}:${port_rel_xhttp}?encryption=none&security=reality&sni=www.bing.com&fp=chrome&pbk=${reality_pub}&sid=${reality_sid}&type=httpupgrade&path=${encoded_xhttp_path}#${pname_rel_xhttp}" >> /opt/suoha_quick/nodes.txt
-            proxy_names+=("$pname_rel_xhttp")
-            cat >> /opt/suoha_quick/clash.yaml <<EOF
-  - name: "${pname_rel_xhttp}"
-    type: vless
-    server: ${direct_yaml_host}
-    port: ${port_rel_xhttp}
-    uuid: ${uuid}
-    network: ws
-    tls: true
-    udp: true
-    servername: www.bing.com
-    ws-opts:
-      path: ${xhttp_path}
-      v2ray-http-upgrade: true
-    reality-opts:
-      public-key: ${reality_pub}
-      short-id: ${reality_sid}
-    client-fingerprint: chrome
-EOF
-        fi
 
-        # (C3) VLESS + gRPC + REALITY 直连节点 (兼容兜底)
+        # (C3) VLESS + gRPC + REALITY 直连节点
         local pname_rel_grpc="${node_tag}-VLESS-Reality-gRPC"
         echo "vless://${uuid}@${direct_host}:${port_rel_grpc}?encryption=none&security=reality&sni=www.bing.com&fp=chrome&pbk=${reality_pub}&sid=${reality_sid}&type=grpc&serviceName=${grpc_service}&mode=gun#${pname_rel_grpc}" >> /opt/suoha_quick/nodes.txt
         proxy_names+=("$pname_rel_grpc")
@@ -1054,6 +1046,7 @@ EOF
 
     cat > /opt/suoha_quick/v2ray.txt <<EOF
 ======================== 一键全协议梭哈节点列表 ========================
+[魔改核心版本]: ${sb_core_ver:-sing-box-extended} | 状态: ${sb_status}
 [单 Argo 共用域名]: ${argo_domain}
   ├─ VLESS  WebSocket 路径: /${urlpath_vless}
   └─ Trojan WebSocket 路径: /${urlpath_trojan}
@@ -1068,7 +1061,7 @@ $(echo -e "${snell_display_lines:-未检测到可用公网 IP，跳过 Snell 生
 - AnyTLS / Hysteria2 / TUIC 均已自动签发 www.bing.com 证书 (客户端需开启跳过证书验证)
 - VLESS Reality 三件套共用参数 -> 伪装域名: www.bing.com | PublicKey: ${reality_pub} | ShortID: ${reality_sid}
   ├─ Reality Vision 端口: ${port_reality}
-  ├─ Reality XHTTP  端口: ${port_rel_xhttp} (传输层: ${xhttp_transport_type} | Path: ${xhttp_path})
+  ├─ Reality XHTTP  端口: ${port_rel_xhttp} (原生 XHTTP | Path: ${xhttp_path})
   └─ Reality gRPC   端口: ${port_rel_grpc} (ServiceName: ${grpc_service})
 
 ======================== 客户端订阅及导入链接 ========================
