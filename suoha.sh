@@ -1,5 +1,5 @@
 #!/bin/bash
-# onekey suoha - Full Protocol Edition (单Argo双路径 + Reality + AnyTLS + HY2 + TUIC + Snell + SS-IPv6)
+# onekey suoha - Full Protocol Edition (单Argo双路径 + Reality + AnyTLS + HY2 + TUIC + Snell双栈 + SS-IPv6)
 
 export PATH=$PATH:/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin
 
@@ -116,6 +116,14 @@ function open_firewall_port() {
             firewall-cmd --zone=public --add-port="${port}/udp" >/dev/null 2>&1
         fi
     fi
+    if command -v iptables >/dev/null 2>&1; then
+        iptables -C INPUT -p tcp --dport "${port}" -j ACCEPT 2>/dev/null || iptables -I INPUT -p tcp --dport "${port}" -j ACCEPT >/dev/null 2>&1
+        iptables -C INPUT -p udp --dport "${port}" -j ACCEPT 2>/dev/null || iptables -I INPUT -p udp --dport "${port}" -j ACCEPT >/dev/null 2>&1
+    fi
+    if command -v ip6tables >/dev/null 2>&1; then
+        ip6tables -C INPUT -p tcp --dport "${port}" -j ACCEPT 2>/dev/null || ip6tables -I INPUT -p tcp --dport "${port}" -j ACCEPT >/dev/null 2>&1
+        ip6tables -C INPUT -p udp --dport "${port}" -j ACCEPT 2>/dev/null || ip6tables -I INPUT -p udp --dport "${port}" -j ACCEPT >/dev/null 2>&1
+    fi
 }
 
 function get_or_create_sub_port() {
@@ -128,6 +136,7 @@ function get_or_create_sub_port() {
         port=$((RANDOM%10000+25000))
         echo "$port" > "$port_file"
     fi
+    open_firewall_port "$port"
     echo "$port"
 }
 
@@ -220,7 +229,7 @@ fi
 function quicktunnel_all_in_one() {
     clear
     echo -e "${CYAN}==================================================================${NC}"
-    echo -e "${GREEN}   一键全协议梭哈部署启动中 (单Argo双路径 + Reality + AnyTLS + HY2 + TUIC + Snell + SS-IPv6)${NC}"
+    echo -e "${GREEN}   一键全协议梭哈部署启动中 (单Argo双路径 + Reality + AnyTLS + HY2 + TUIC + Snell双栈 + SS-IPv6)${NC}"
     echo -e "${CYAN}==================================================================${NC}\n"
 
     show_progress 1 "初始化运行环境并彻底清空旧进程与历史文件..."
@@ -294,7 +303,14 @@ function quicktunnel_all_in_one() {
         exit 1
     fi
 
-    # 2. 生成自签名 www.bing.com 证书与 Reality 密钥
+    # 2. 探测服务器公网 IPv4 与 IPv6
+    show_progress 48 "正在探测服务器双栈公网 IP..."
+    local server_ip
+    server_ip=$(get_server_ip)
+    local server_ipv6
+    server_ipv6=$(get_server_ipv6)
+
+    # 3. 生成自签名 www.bing.com 证书与 Reality 密钥
     show_progress 52 "正在自签 www.bing.com TLS 证书与 Reality X25519 密钥..."
     openssl ecparam -genkey -name prime256v1 -out /opt/suoha_quick/cert/bing.key >/dev/null 2>&1
     openssl req -new -x509 -days 3650 -key /opt/suoha_quick/cert/bing.key \
@@ -311,7 +327,7 @@ function quicktunnel_all_in_one() {
     local reality_sid
     reality_sid=$(openssl rand -hex 8)
 
-    # 3. 分配随机端口与凭证
+    # 4. 分配随机端口与凭证
     local uuid
     uuid=$(cat /proc/sys/kernel/random/uuid)
     local short_id
@@ -341,7 +357,7 @@ function quicktunnel_all_in_one() {
     open_firewall_port "$port_snell"
     open_firewall_port "$port_ss_v6"
 
-    # 4. 生成 Sing-box 全协议统一配置文件 (新增 ss-ipv6-in 入站)
+    # 5. 生成 Sing-box 全协议统一配置文件
     show_progress 60 "正在写入 Sing-box 全协议与 Snell 配置文件..."
     cat > /opt/suoha_quick/singbox.json <<EOF
 {
@@ -494,7 +510,7 @@ function quicktunnel_all_in_one() {
 }
 EOF
 
-    show_progress 66 "正在启动 Sing-box、本地路径分流器与 Snell 核心守护进程..."
+    show_progress 66 "正在启动 Sing-box、本地路径分流器与 Snell 双栈守护进程..."
     nohup /opt/suoha_quick/sing-box run -c /opt/suoha_quick/singbox.json >/opt/suoha_quick/singbox.log 2>&1 &
     echo $! > /opt/suoha_quick/singbox.pid
 
@@ -549,6 +565,7 @@ EOF
     nohup python3 /opt/suoha_quick/argo_router.py >/dev/null 2>&1 &
     echo $! > /opt/suoha_quick/argo_router.pid
 
+    # 启动 Snell 双栈监听 (使用 ::0:端口 语法确保 IPv4 + IPv6 同步监听)
     local snell_psk
     snell_psk=$(openssl rand -base64 24 | tr -dc 'a-zA-Z0-9' | head -c 24)
     local snell_installed=0
@@ -557,7 +574,7 @@ EOF
     if [ -x /opt/suoha_quick/snell-server ]; then
         cat > /opt/suoha_quick/snell.conf <<EOF
 [snell-server]
-listen = [::]:${port_snell}
+listen = ::0:${port_snell}
 psk = ${snell_psk}
 ipv6 = true
 obfs = off
@@ -567,7 +584,7 @@ EOF
         echo $snell_pid > /opt/suoha_quick/snell.pid
         sleep 0.5
         if ! kill -0 "$snell_pid" 2>/dev/null; then
-            sed -i "s|\[::\]|0.0.0.0|g" /opt/suoha_quick/snell.conf
+            sed -i "s|::0|0.0.0.0|g" /opt/suoha_quick/snell.conf
             nohup /opt/suoha_quick/snell-server -c /opt/suoha_quick/snell.conf >/opt/suoha_quick/snell.log 2>&1 &
             snell_pid=$!
             echo $snell_pid > /opt/suoha_quick/snell.pid
@@ -575,17 +592,14 @@ EOF
         fi
         if kill -0 "$snell_pid" 2>/dev/null; then
             snell_installed=1
-            snell_status="运行正常 (PID:${snell_pid} | 协议版本: v4)"
+            local listen_info
+            listen_info=$(ss -tlpn 2>/dev/null | grep "pid=${snell_pid}" | awk '{print $4}' | tr '\n' ' ')
+            snell_status="运行正常 (PID:${snell_pid} | 监听:${listen_info:-::0:${port_snell}})"
         fi
     fi
 
-    # 5. 自动探测出口 IP 协议栈并拉起单个 Cloudflare Argo 隧道 (双协议共用同一 Argo 域名)
-    show_progress 70 "正在探测服务器双栈公网 IP 与机房归属..."
-    local server_ip
-    server_ip=$(get_server_ip)
-    local server_ipv6
-    server_ipv6=$(get_server_ipv6)
-
+    # 6. 拉起单个 Cloudflare Argo 隧道 (双协议共用同一 Argo 域名)
+    show_progress 70 "正在获取机房归属并建立单 Argo 双路径隧道..."
     local ips=4
     if [ -z "$server_ip" ] && [ -n "$server_ipv6" ]; then
         ips=6
@@ -599,7 +613,7 @@ EOF
         node_tag="Suoha_Node"
     fi
 
-    show_progress 74 "正在建立单 Argo 隧道 (VLESS /${urlpath_vless} + Trojan /${urlpath_trojan})..."
+    show_progress 74 "正在申请 Argo 隧道 (VLESS /${urlpath_vless} + Trojan /${urlpath_trojan})..."
     /opt/suoha_quick/cloudflared-linux tunnel --url "http://127.0.0.1:${port_argo_entry}" --no-autoupdate --edge-ip-version "$ips" --protocol http2 > /opt/suoha_quick/argo_main.log 2>&1 &
     echo $! > /opt/suoha_quick/cf_main.pid
 
@@ -634,7 +648,7 @@ EOF
         fi
     done
 
-    # 6. 生成全协议节点链接与 Clash / Mihomo 配置文件
+    # 7. 生成全协议节点链接与 Clash / Mihomo 配置文件
     show_progress 95 "正在生成全协议 URI 链接与 Clash/Mihomo 聚合配置..."
     > /opt/suoha_quick/nodes.txt
     > /opt/suoha_quick/surge.conf
@@ -816,7 +830,7 @@ EOF
 EOF
     fi
 
-    # (H) Snell 节点
+    # (H) Snell 双栈节点 (显式补充 ip-version: ipv6 确保 Clash Verge Rev / Mihomo 100% 走 IPv6 握手)
     local snell_display_lines=""
     if [ $snell_installed -eq 1 ]; then
         if [ -n "$server_ip" ]; then
@@ -842,6 +856,7 @@ EOF
             cat >> /opt/suoha_quick/clash.yaml <<EOF
   - name: "${pname_snell_v6}"
     type: snell
+    ip-version: ipv6
     server: "${server_ipv6}"
     port: ${port_snell}
     psk: "${snell_psk}"
@@ -903,7 +918,7 @@ EOF
 [URI 通用节点链接 (VLESS-Argo / Trojan-Argo / Reality / AnyTLS / HY2 / TUIC / SS-IPv6)]
 $(cat /opt/suoha_quick/nodes.txt)
 
-[Snell 专属配置 (Surge / Clash Verge / Mihomo) | 状态: ${snell_status}]
+[Snell 双栈专属配置 (Surge / Clash Verge / Mihomo) | 状态: ${snell_status}]
 $(echo -e "${snell_display_lines:-未检测到可用公网 IP，跳过 Snell 生成}")
 ======================== 端口与证书说明 ========================
 - Argo 节点 443 端口可按需替换为 CF 其它 TLS 端口: 2053, 2083, 2087, 2096, 8443
