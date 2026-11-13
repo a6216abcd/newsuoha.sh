@@ -1,5 +1,5 @@
 #!/bin/bash
-# onekey suoha - Full Protocol Edition (Sing-box主力 + Xray官方原生XHTTP引擎 + 单Argo双路径 + Snell双栈 + SS-IPv6)
+# onekey suoha - Full Protocol Edition (官方Sing-box主力 + 单Argo双路径 + Reality[Vision/gRPC] + AnyTLS + HY2 + TUIC + Snell双栈 + SS-IPv6)
 
 export PATH=$PATH:/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin
 
@@ -181,8 +181,6 @@ function sync_to_static_web() {
 
 function stop_all_services() {
     safe_kill_pidfile "/opt/suoha_quick/singbox.pid"
-    safe_kill_pidfile "/opt/suoha_quick/singbox_ext.pid"
-    safe_kill_pidfile "/opt/suoha_quick/xray.pid"
     safe_kill_pidfile "/opt/suoha_quick/cf_main.pid"
     safe_kill_pidfile "/opt/suoha_quick/cf_vl.pid"
     safe_kill_pidfile "/opt/suoha_quick/cf_tr.pid"
@@ -192,9 +190,9 @@ function stop_all_services() {
     safe_kill_pidfile "/opt/suoha_quick/sub_http.pid"
 
     if command -v killall >/dev/null 2>&1; then
-        killall -9 sing-box sing-box-ext xray cloudflared-linux snell-server snell-server-v6 >/dev/null 2>&1
+        killall -9 sing-box cloudflared-linux snell-server snell-server-v6 >/dev/null 2>&1
     else
-        for bin_name in sing-box sing-box-ext xray cloudflared-linux snell-server snell-server-v6; do
+        for bin_name in sing-box cloudflared-linux snell-server snell-server-v6; do
             for pid in $(pidof "$bin_name" 2>/dev/null); do
                 if [ "$pid" != "$$" ] && [ "$pid" != "$PPID" ]; then
                     kill -9 "$pid" >/dev/null 2>&1
@@ -231,7 +229,7 @@ fi
 function quicktunnel_all_in_one() {
     clear
     echo -e "${CYAN}==================================================================${NC}"
-    echo -e "${GREEN}   一键全协议梭哈部署启动中 (Sing-box主力 + Xray原生XHTTP引擎 + 单Argo + Snell + SS-IPv6)${NC}"
+    echo -e "${GREEN}   一键全协议梭哈部署启动中 (官方Sing-box主力 + 单Argo + Snell + SS-IPv6)${NC}"
     echo -e "${CYAN}==================================================================${NC}\n"
 
     show_progress 1 "初始化运行环境并彻底清空旧进程与历史文件..."
@@ -244,32 +242,27 @@ function quicktunnel_all_in_one() {
 
     # 1. 架构识别与核心下载
     local arch_sb=""
-    local arch_xray=""
     local arch_cf=""
     local arch_snell=""
 
     case "$(uname -m)" in
         x86_64 | x64 | amd64 )
             arch_sb="linux-amd64"
-            arch_xray="Xray-linux-64.zip"
             arch_cf="linux-amd64"
             arch_snell="linux-amd64"
             ;;
         i386 | i686 )
             arch_sb="linux-386"
-            arch_xray="Xray-linux-32.zip"
             arch_cf="linux-386"
             arch_snell="linux-i386"
             ;;
         armv8 | arm64 | aarch64 )
             arch_sb="linux-arm64"
-            arch_xray="Xray-linux-arm64-v8a.zip"
             arch_cf="linux-arm64"
             arch_snell="linux-aarch64"
             ;;
         armv7l )
             arch_sb="linux-armv7"
-            arch_xray="Xray-linux-arm32-v7a.zip"
             arch_cf="linux-arm"
             arch_snell="linux-armv7l"
             ;;
@@ -279,27 +272,20 @@ function quicktunnel_all_in_one() {
             ;;
     esac
 
-    show_progress 14 "正在获取官方 Sing-box 稳定版核心..."
+    show_progress 15 "正在获取官方 Sing-box 稳定版核心..."
     local sb_version
     sb_version=$(curl -s https://api.github.com/repos/SagerNet/sing-box/releases/latest | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
     if [ -z "$sb_version" ]; then
         sb_version="1.12.12"
     fi
 
-    show_progress 20 "正在下载官方 Sing-box v${sb_version} 主力核心..."
+    show_progress 22 "正在下载官方 Sing-box v${sb_version} 主力核心..."
     curl -sL "https://github.com/SagerNet/sing-box/releases/download/v${sb_version}/sing-box-${sb_version}-${arch_sb}.tar.gz" -o sb.tar.gz
     tar -xzf sb.tar.gz >/dev/null 2>&1
     mv "sing-box-${sb_version}-${arch_sb}/sing-box" /opt/suoha_quick/sing-box 2>/dev/null
     rm -rf "sing-box-${sb_version}-${arch_sb}" sb.tar.gz
 
-    show_progress 28 "正在下载最新 Xray-core 原生 XHTTP 引擎..."
-    curl -sL "https://github.com/XTLS/Xray-core/releases/latest/download/${arch_xray}" -o xray.zip
-    mkdir -p /opt/suoha_quick/tmp_xray
-    unzip -oq xray.zip -d /opt/suoha_quick/tmp_xray >/dev/null 2>&1
-    mv /opt/suoha_quick/tmp_xray/xray /opt/suoha_quick/xray 2>/dev/null
-    rm -rf /opt/suoha_quick/tmp_xray xray.zip
-
-    show_progress 36 "正在下载 Cloudflare Argo 隧道组件..."
+    show_progress 34 "正在下载 Cloudflare Argo 隧道组件..."
     curl -sL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-${arch_cf}" -o /opt/suoha_quick/cloudflared-linux
 
     show_progress 44 "正在下载官方 Snell v4.1.1 双栈服务端..."
@@ -310,7 +296,6 @@ function quicktunnel_all_in_one() {
     rm -f snell.zip
 
     chmod +x /opt/suoha_quick/sing-box /opt/suoha_quick/cloudflared-linux 2>/dev/null
-    [ -f /opt/suoha_quick/xray ] && chmod +x /opt/suoha_quick/xray
     [ -f /opt/suoha_quick/snell-server ] && chmod +x /opt/suoha_quick/snell-server
 
     if [ ! -x /opt/suoha_quick/sing-box ] || [ ! -x /opt/suoha_quick/cloudflared-linux ]; then
@@ -349,7 +334,6 @@ function quicktunnel_all_in_one() {
     short_id=$(echo "$uuid" | awk -F- '{print $1}')
     local urlpath_vless="vl-${short_id}"
     local urlpath_trojan="tr-${short_id}"
-    local xhttp_path="/xh-${short_id}"
     local grpc_service="gr-${short_id}"
     local password_all
     password_all=$(openssl rand -hex 12)
@@ -366,11 +350,9 @@ function quicktunnel_all_in_one() {
     local port_tuic=$((port_reality+3))
     local port_snell=$((port_reality+4))
     local port_ss_v6=$((port_reality+5))
-    local port_rel_xhttp=$((port_reality+6))
-    local port_rel_grpc=$((port_reality+7))
+    local port_rel_grpc=$((port_reality+6))
 
     open_firewall_port "$port_reality"
-    open_firewall_port "$port_rel_xhttp"
     open_firewall_port "$port_rel_grpc"
     open_firewall_port "$port_anytls"
     open_firewall_port "$port_hy2"
@@ -378,7 +360,7 @@ function quicktunnel_all_in_one() {
     open_firewall_port "$port_snell"
     open_firewall_port "$port_ss_v6"
 
-    # 5. 生成官方 Sing-box 主力全协议配置文件
+    # 5. 生成官方 Sing-box 主力全协议配置文件 (已暂时屏蔽/移除 XHTTP 节点)
     show_progress 58 "正在写入官方 Sing-box 主力全协议配置..."
     cat > /opt/suoha_quick/singbox.json <<EOF
 {
@@ -561,94 +543,12 @@ function quicktunnel_all_in_one() {
 }
 EOF
 
-    # 6. 使用 Xray-core 原生引擎独立承载 XHTTP + REALITY (mode: stream-one 直连单流模式，100% 兼容 Mihomo 与 v2rayN)
-    show_progress 62 "正在配置并启动原生 XHTTP + REALITY 独立服务端..."
-    local xhttp_ok=0
-    local xhttp_status="未启动"
-    local xray_listen="0.0.0.0"
-    if [ -z "$server_ip" ] && [ -n "$server_ipv6" ]; then
-        xray_listen="::"
-    fi
-
-    if [ -x /opt/suoha_quick/xray ]; then
-        cat > /opt/suoha_quick/xray_xhttp.json <<EOF
-{
-  "log": {
-    "loglevel": "error"
-  },
-  "inbounds": [
-    {
-      "tag": "reality-xhttp-in",
-      "listen": "${xray_listen}",
-      "port": ${port_rel_xhttp},
-      "protocol": "vless",
-      "settings": {
-        "clients": [
-          {
-            "id": "${uuid}"
-          }
-        ],
-        "decryption": "none"
-      },
-      "streamSettings": {
-        "network": "xhttp",
-        "xhttpSettings": {
-          "host": "www.bing.com",
-          "path": "${xhttp_path}",
-          "mode": "stream-one"
-        },
-        "security": "reality",
-        "realitySettings": {
-          "show": false,
-          "dest": "www.bing.com:443",
-          "xver": 0,
-          "serverNames": [
-            "www.bing.com"
-          ],
-          "privateKey": "${reality_priv}",
-          "shortIds": [
-            "${reality_sid}"
-          ]
-        }
-      },
-      "sniffing": {
-        "enabled": true,
-        "destOverride": [
-          "http",
-          "tls",
-          "quic"
-        ]
-      }
-    }
-  ],
-  "outbounds": [
-    {
-      "protocol": "freedom",
-      "tag": "direct"
-    }
-  ]
-}
-EOF
-        nohup /opt/suoha_quick/xray run -c /opt/suoha_quick/xray_xhttp.json >/opt/suoha_quick/xray_xhttp.log 2>&1 &
-        local xray_pid=$!
-        echo $xray_pid > /opt/suoha_quick/xray.pid
-        sleep 0.6
-        if kill -0 "$xray_pid" 2>/dev/null; then
-            xhttp_ok=1
-            local xhttp_listen_info
-            xhttp_listen_info=$(ss -tlpn 2>/dev/null | grep "pid=${xray_pid}" | awk '{print $4}' | tr '\n' ' ')
-            xhttp_status="运行正常 (PID:${xray_pid} | 监听:${xhttp_listen_info:-${xray_listen}:${port_rel_xhttp}})"
-        else
-            xhttp_status="启动失败: $(cat /opt/suoha_quick/xray_xhttp.log 2>/dev/null | tr '\n' ' ')"
-        fi
-    fi
-
     show_progress 66 "正在启动官方 Sing-box 主力、本地分流器与 Snell 双栈守护进程..."
     nohup /opt/suoha_quick/sing-box run -c /opt/suoha_quick/singbox.json >/opt/suoha_quick/singbox.log 2>&1 &
     local sb_pid=$!
     echo $sb_pid > /opt/suoha_quick/singbox.pid
 
-    # 轻量本地 WebSocket 路径分流守护进程
+    # 轻量本地 WebSocket 路径分流守护进程 (单 Argo 域名按请求路径分发 /vl-xxx 与 /tr-xxx)
     cat > /opt/suoha_quick/argo_router.py <<EOF
 import asyncio
 
@@ -699,7 +599,7 @@ EOF
     nohup python3 /opt/suoha_quick/argo_router.py >/dev/null 2>&1 &
     echo $! > /opt/suoha_quick/argo_router.pid
 
-    # 启动 Snell 双栈监听
+    # 启动 Snell 双栈监听 (使用 ::0:端口 语法确保 IPv4 + IPv6 同步监听)
     local snell_psk
     snell_psk=$(openssl rand -base64 24 | tr -dc 'a-zA-Z0-9' | head -c 24)
     local snell_installed=0
@@ -737,7 +637,7 @@ EOF
         sb_status="异常: $(cat /opt/suoha_quick/singbox.log 2>/dev/null | tr '\n' ' ')"
     fi
 
-    # 7. 拉起单个 Cloudflare Argo 隧道 (双协议共用同一 Argo 域名)
+    # 6. 拉起单个 Cloudflare Argo 隧道 (双协议共用同一 Argo 域名)
     show_progress 70 "正在获取机房归属并建立单 Argo 双路径隧道..."
     local ips=4
     if [ -z "$server_ip" ] && [ -n "$server_ipv6" ]; then
@@ -787,7 +687,7 @@ EOF
         fi
     done
 
-    # 8. 生成全协议节点链接与 Clash / Mihomo 配置文件
+    # 7. 生成全协议节点链接与 Clash / Mihomo 配置文件
     show_progress 95 "正在生成全协议 URI 链接与 Clash/Mihomo 聚合配置..."
     > /opt/suoha_quick/nodes.txt
     > /opt/suoha_quick/surge.conf
@@ -869,8 +769,6 @@ EOF
     fi
 
     if [ -n "$direct_host" ]; then
-        local encoded_xhttp_path="%2Fxh-${short_id}"
-
         # (C1) VLESS Reality Vision 直连节点 (主力首选)
         local pname_rel="${node_tag}-VLESS-Reality-Vision"
         echo "vless://${uuid}@${direct_host}:${port_reality}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.bing.com&fp=chrome&pbk=${reality_pub}&sid=${reality_sid}&type=tcp&headerType=none#${pname_rel}" >> /opt/suoha_quick/nodes.txt
@@ -892,31 +790,7 @@ EOF
     client-fingerprint: chrome
 EOF
 
-        # (C2) VLESS + XHTTP + REALITY 直连节点 (对齐 stream-one 与 host: www.bing.com)
-        local pname_rel_xhttp="${node_tag}-VLESS-Reality-XHTTP"
-        echo "vless://${uuid}@${direct_host}:${port_rel_xhttp}?encryption=none&security=reality&sni=www.bing.com&fp=chrome&pbk=${reality_pub}&sid=${reality_sid}&type=xhttp&host=www.bing.com&path=${encoded_xhttp_path}&mode=stream-one#${pname_rel_xhttp}" >> /opt/suoha_quick/nodes.txt
-        proxy_names+=("$pname_rel_xhttp")
-        cat >> /opt/suoha_quick/clash.yaml <<EOF
-  - name: "${pname_rel_xhttp}"
-    type: vless
-    server: ${direct_yaml_host}
-    port: ${port_rel_xhttp}
-    uuid: ${uuid}
-    network: xhttp
-    tls: true
-    udp: true
-    servername: www.bing.com
-    xhttp-opts:
-      host: www.bing.com
-      path: ${xhttp_path}
-      mode: stream-one
-    reality-opts:
-      public-key: ${reality_pub}
-      short-id: ${reality_sid}
-    client-fingerprint: chrome
-EOF
-
-        # (C3) VLESS + gRPC + REALITY 直连节点
+        # (C2) VLESS Reality gRPC 直连节点
         local pname_rel_grpc="${node_tag}-VLESS-Reality-gRPC"
         echo "vless://${uuid}@${direct_host}:${port_rel_grpc}?encryption=none&security=reality&sni=www.bing.com&fp=chrome&pbk=${reality_pub}&sid=${reality_sid}&type=grpc&serviceName=${grpc_service}&mode=gun#${pname_rel_grpc}" >> /opt/suoha_quick/nodes.txt
         proxy_names+=("$pname_rel_grpc")
@@ -1100,14 +974,13 @@ EOF
 ======================== 一键全协议梭哈节点列表 ========================
 [核心运行状态]:
   ├─ 官方 Sing-box 主力进程 : ${sb_status}
-  ├─ 独立 XHTTP 服务端进程  : ${xhttp_status}
   └─ Snell 双栈守护进程    : ${snell_status}
 
 [单 Argo 共用域名]: ${argo_domain}
   ├─ VLESS  WebSocket 路径: /${urlpath_vless}
   └─ Trojan WebSocket 路径: /${urlpath_trojan}
 
-[URI 通用节点链接 (Argo / Reality[Vision/XHTTP/gRPC] / AnyTLS / HY2 / TUIC / SS-IPv6)]
+[URI 通用节点链接 (Argo / Reality[Vision/gRPC] / AnyTLS / HY2 / TUIC / SS-IPv6)]
 $(cat /opt/suoha_quick/nodes.txt)
 
 [Snell 双栈专属配置 (Surge / Clash Verge / Mihomo)]
@@ -1115,10 +988,10 @@ $(echo -e "${snell_display_lines:-未检测到可用公网 IP，跳过 Snell 生
 ======================== 端口与证书说明 ========================
 - Argo 节点 443 端口可按需替换为 CF 其它 TLS 端口: 2053, 2083, 2087, 2096, 8443
 - AnyTLS / Hysteria2 / TUIC 均已自动签发 www.bing.com 证书 (客户端需开启跳过证书验证)
-- VLESS Reality 三件套共用参数 -> 伪装域名: www.bing.com | PublicKey: ${reality_pub} | ShortID: ${reality_sid}
+- VLESS Reality 共用参数 -> 伪装域名: www.bing.com | PublicKey: ${reality_pub} | ShortID: ${reality_sid}
   ├─ Reality Vision 端口: ${port_reality}
-  ├─ Reality XHTTP  端口: ${port_rel_xhttp} (Path: ${xhttp_path} | Mode: stream-one)
   └─ Reality gRPC   端口: ${port_rel_grpc} (ServiceName: ${grpc_service})
+- (注: XHTTP 节点已暂时屏蔽，等待官方内核原生支持)
 
 ======================== 客户端订阅及导入链接 ========================
 本机固定订阅服务端口: ${sub_port} (已永久保存，重新梭哈无需重新导入客户端)
