@@ -6,6 +6,34 @@ export PATH=$PATH:/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin
 # 支持命令行参数快速卸载: bash suoha.sh uninstall
 ACTION="${1:-install}"
 
+# 颜色定义
+GREEN='\033[0;32m'
+CYAN='\033[0;36m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+NC='\033[0m'
+
+# 实时终端进度条渲染函数: show_progress <百分比 0-100> <当前任务描述>
+function show_progress() {
+    local pct=$1
+    local msg="$2"
+    local width=36
+    local filled=$((pct * width / 100))
+    local empty=$((width - filled))
+    local bar_filled=""
+    local bar_empty=""
+
+    if [ $filled -gt 0 ]; then
+        bar_filled=$(printf "%${filled}s" | tr ' ' '█')
+    fi
+    if [ $empty -gt 0 ]; then
+        bar_empty=$(printf "%${empty}s" | tr ' ' '░')
+    fi
+
+    # 清除当前行并原地刷新进度条
+    printf "\r\033[K${CYAN}[${GREEN}${bar_filled}${NC}${bar_empty}${CYAN}] ${YELLOW}%3d%%${NC} - %s" "$pct" "$msg"
+}
+
 linux_os=("Debian" "Ubuntu" "CentOS" "Fedora" "Alpine")
 linux_update=("apt update" "apt update" "yum -y update" "yum -y update" "apk update")
 linux_install=("apt -y install" "apt -y install" "yum -y install" "yum -y install" "apk add -f")
@@ -21,7 +49,6 @@ for i in "${linux_os[@]}"; do
 done
 
 if [ $n -eq 5 ]; then
-    echo "当前系统 ${OS_NAME:-Unknown} 未在预设列表，默认使用 APT 包管理器"
     n=0
 fi
 
@@ -37,13 +64,20 @@ install_deps() {
     done
 
     if [ $need_update -eq 1 ]; then
+        show_progress 4 "正在更新系统软件源..."
         ${linux_update[$n]} >/dev/null 2>&1
+        local total_deps=${#deps[@]}
+        local idx=0
         for dep in "${deps[@]}"; do
+            idx=$((idx+1))
+            local step_pct=$((4 + idx * 8 / total_deps))
             if [ -z "$(type -P "$dep")" ]; then
+                show_progress $step_pct "正在安装依赖组件: ${dep}..."
                 ${linux_install[$n]} "$dep" >/dev/null 2>&1
             fi
         done
     fi
+    show_progress 12 "系统基础依赖检查完成"
 }
 
 function get_server_ip() {
@@ -124,10 +158,16 @@ function stop_all_services() {
 }
 
 function uninstall_all() {
+    show_progress 20 "正在停止运行中的全协议代理进程..."
     stop_all_services
+    sleep 0.5
+    show_progress 60 "正在清理 HTTP 订阅守护进程..."
     pkill -f "http.server" >/dev/null 2>&1
+    sleep 0.5
+    show_progress 90 "正在删除配置文件与证书目录..."
     rm -rf /opt/suoha /opt/suoha_quick /etc/suoha_sub_port /var/www/suoha_sub /usr/bin/suoha
-    echo "所有梭哈全协议服务及订阅文件已彻底清理完成。"
+    show_progress 100 "卸载清理完成！"
+    echo -e "\n所有梭哈全协议服务及订阅文件已彻底清理完成。"
     exit 0
 }
 
@@ -137,18 +177,19 @@ fi
 
 function quicktunnel_all_in_one() {
     clear
-    echo "=================================================================="
-    echo "   一键全协议梭哈部署启动中 (Argo + Reality + AnyTLS + HY2 + TUIC + Snell-v6)"
-    echo "=================================================================="
-    
-    install_deps
+    echo -e "${CYAN}==================================================================${NC}"
+    echo -e "${GREEN}   一键全协议梭哈部署启动中 (Argo + Reality + AnyTLS + HY2 + TUIC + Snell-v6)${NC}"
+    echo -e "${CYAN}==================================================================${NC}\n"
+
+    show_progress 1 "初始化运行环境并清理旧进程..."
     stop_all_services
+    install_deps
 
     mkdir -p /opt/suoha_quick/cert >/dev/null 2>&1
     cd /opt/suoha_quick || exit 1
     rm -rf sing-box cloudflared-linux snell-server sb.tar.gz snell.zip
 
-    # 1. 架构识别与核心二进制下载 (Sing-box 最新版 + Cloudflared + Snell)
+    # 1. 架构识别与核心二进制下载
     local arch_sb=""
     local arch_cf=""
     local arch_snell=""
@@ -175,52 +216,53 @@ function quicktunnel_all_in_one() {
             arch_snell="linux-armv7l"
             ;;
         * )
-            echo "当前架构 $(uname -m) 暂不支持！"
+            echo -e "\n${RED}当前架构 $(uname -m) 暂不支持！${NC}"
             exit 1
             ;;
     esac
 
-    echo "[1/5] 正在拉取最新 Sing-box 核心、Cloudflared 与 Snell-server..."
+    show_progress 15 "正在获取最新 Sing-box 版本号..."
     local sb_version
     sb_version=$(curl -s https://api.github.com/repos/SagerNet/sing-box/releases/latest | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
     if [ -z "$sb_version" ]; then
         sb_version="1.12.12"
     fi
 
+    show_progress 22 "正在下载 Sing-box v${sb_version} 核心..."
     curl -sL "https://github.com/SagerNet/sing-box/releases/download/v${sb_version}/sing-box-${sb_version}-${arch_sb}.tar.gz" -o sb.tar.gz
-    tar -xzf sb.tar.gz
-    mv "sing-box-${sb_version}-${arch_sb}/sing-box" /opt/suoha_quick/sing-box
+    tar -xzf sb.tar.gz >/dev/null 2>&1
+    mv "sing-box-${sb_version}-${arch_sb}/sing-box" /opt/suoha_quick/sing-box 2>/dev/null
     rm -rf "sing-box-${sb_version}-${arch_sb}" sb.tar.gz
 
+    show_progress 34 "正在下载 Cloudflare Argo 隧道组件..."
     curl -sL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-${arch_cf}" -o /opt/suoha_quick/cloudflared-linux
 
-    # 下载 Snell v5 (兼容 v4/v5/v6 双栈模式)
+    show_progress 44 "正在下载 Snell-server 双栈服务端..."
     curl -sL "https://dl.nssurge.com/snell/snell-server-v5.0.0-${arch_snell}.zip" -o snell.zip
     if [ -s snell.zip ] && unzip -t snell.zip >/dev/null 2>&1; then
-        unzip -oq snell.zip -d /opt/suoha_quick/
+        unzip -oq snell.zip -d /opt/suoha_quick/ >/dev/null 2>&1
     else
         curl -sL "https://dl.nssurge.com/snell/snell-server-v4.1.1-${arch_snell}.zip" -o snell.zip
-        unzip -oq snell.zip -d /opt/suoha_quick/ 2>/dev/null
+        unzip -oq snell.zip -d /opt/suoha_quick/ >/dev/null 2>&1
     fi
     rm -f snell.zip
 
-    chmod +x /opt/suoha_quick/sing-box /opt/suoha_quick/cloudflared-linux
+    chmod +x /opt/suoha_quick/sing-box /opt/suoha_quick/cloudflared-linux 2>/dev/null
     [ -f /opt/suoha_quick/snell-server ] && chmod +x /opt/suoha_quick/snell-server
 
     if [ ! -x /opt/suoha_quick/sing-box ] || [ ! -x /opt/suoha_quick/cloudflared-linux ]; then
-        echo "核心文件下载失败，请检查服务器网络连接（GitHub 访问是否正常）！"
+        echo -e "\n${RED}核心文件下载失败，请检查服务器网络连接（GitHub 访问是否正常）！${NC}"
         exit 1
     fi
 
-    # 2. 生成自签名 www.bing.com 证书 (供 AnyTLS, Hysteria2, TUIC 使用)
-    echo "[2/5] 正在生成自签名 www.bing.com TLS 证书与 Reality 密钥对..."
+    # 2. 生成自签名 www.bing.com 证书与 Reality 密钥
+    show_progress 52 "正在自签 www.bing.com TLS 证书与 Reality X25519 密钥..."
     openssl ecparam -genkey -name prime256v1 -out /opt/suoha_quick/cert/bing.key >/dev/null 2>&1
     openssl req -new -x509 -days 3650 -key /opt/suoha_quick/cert/bing.key \
         -out /opt/suoha_quick/cert/bing.crt \
         -subj "/C=US/ST=Washington/L=Redmond/O=Microsoft Corporation/CN=www.bing.com" \
         -addext "subjectAltName=DNS:www.bing.com,DNS:bing.com" >/dev/null 2>&1
 
-    # 生成 Reality X25519 密钥对与 ShortID
     local reality_keys
     reality_keys=$(/opt/suoha_quick/sing-box generate reality-keypair)
     local reality_priv
@@ -249,7 +291,7 @@ function quicktunnel_all_in_one() {
     local port_snell=$((port_reality+4))
 
     # 4. 生成 Sing-box 全协议统一配置文件
-    echo "[3/5] 正在生成 Sing-box 全协议配置与 Snell-v6 双栈配置..."
+    show_progress 60 "正在写入 Sing-box 全协议与 Snell-v6 配置文件..."
     cat > /opt/suoha_quick/singbox.json <<EOF
 {
   "log": {
@@ -393,11 +435,10 @@ function quicktunnel_all_in_one() {
 }
 EOF
 
-    # 启动 Sing-box
+    show_progress 66 "正在启动 Sing-box 与 Snell-v6 核心守护进程..."
     nohup /opt/suoha_quick/sing-box run -c /opt/suoha_quick/singbox.json >/opt/suoha_quick/singbox.log 2>&1 &
     echo $! > /opt/suoha_quick/singbox.pid
 
-    # 配置并启动 Snell-v6 (监听 ::0 支持原生 IPv6 接入)
     local snell_psk
     snell_psk=$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9' | head -c 16)
     local snell_installed=0
@@ -415,7 +456,7 @@ EOF
     fi
 
     # 5. 自动探测出口 IP 协议栈并拉起双 Argo 隧道
-    echo "[4/5] 正在拉起 Cloudflare Argo 双协议临时隧道 (VLESS + Trojan)..."
+    show_progress 70 "正在探测服务器双栈公网 IP 与机房归属..."
     local server_ip
     server_ip=$(get_server_ip)
     local server_ipv6
@@ -434,6 +475,7 @@ EOF
         node_tag="Suoha_Node"
     fi
 
+    show_progress 74 "正在建立 Cloudflare Argo 双协议临时隧道..."
     /opt/suoha_quick/cloudflared-linux tunnel --url "http://127.0.0.1:${port_argo_vl}" --no-autoupdate --edge-ip-version "$ips" --protocol http2 > /opt/suoha_quick/argo_vless.log 2>&1 &
     echo $! > /opt/suoha_quick/cf_vl.pid
 
@@ -450,15 +492,27 @@ EOF
 
         if [ -n "$argo_vl" ] && [ -n "$argo_tr" ]; then
             rm -f /opt/suoha_quick/argo_vless.log /opt/suoha_quick/argo_trojan.log
+            show_progress 92 "Argo 双协议隧道域名分配成功！"
             break
         fi
+
+        # 动态计算 75% - 91% 之间的实时等待进度
+        local dynamic_pct=$((74 + wait_sec))
+        if [ $dynamic_pct -gt 91 ]; then
+            dynamic_pct=91
+        fi
+        local status_vl="等待中"
+        local status_tr="等待中"
+        [ -n "$argo_vl" ] && status_vl="已就绪"
+        [ -n "$argo_tr" ] && status_tr="已就绪"
+        show_progress $dynamic_pct "等待 Argo 分配域名 (VLESS:${status_vl} | Trojan:${status_tr}) [${wait_sec}s]..."
 
         if [ $wait_sec -ge 25 ]; then
             wait_sec=0
             [ -f "/opt/suoha_quick/cf_vl.pid" ] && kill -9 "$(cat /opt/suoha_quick/cf_vl.pid)" >/dev/null 2>&1
             [ -f "/opt/suoha_quick/cf_tr.pid" ] && kill -9 "$(cat /opt/suoha_quick/cf_tr.pid)" >/dev/null 2>&1
             rm -f /opt/suoha_quick/argo_vless.log /opt/suoha_quick/argo_trojan.log
-            echo "Argo 隧道获取超时，正在自动重试建立双隧道..."
+            show_progress 75 "Argo 获取超时，正在自动重连建立双隧道..."
             /opt/suoha_quick/cloudflared-linux tunnel --url "http://127.0.0.1:${port_argo_vl}" --no-autoupdate --edge-ip-version "$ips" --protocol http2 > /opt/suoha_quick/argo_vless.log 2>&1 &
             echo $! > /opt/suoha_quick/cf_vl.pid
             /opt/suoha_quick/cloudflared-linux tunnel --url "http://127.0.0.1:${port_argo_tr}" --no-autoupdate --edge-ip-version "$ips" --protocol http2 > /opt/suoha_quick/argo_trojan.log 2>&1 &
@@ -470,7 +524,7 @@ EOF
     done
 
     # 6. 生成全协议节点链接与 Clash / Mihomo 配置文件
-    echo "[5/5] 正在生成全协议节点链接与聚合订阅文件..."
+    show_progress 95 "正在生成全协议 URI 链接与 Clash/Mihomo 聚合配置..."
     > /opt/suoha_quick/nodes.txt
     > /opt/suoha_quick/surge.conf
 
@@ -539,7 +593,7 @@ EOF
 EOF
     done
 
-    # 确定直连连接地址（优先 IPv4，无 IPv4 则使用 [IPv6]）
+    # 确定直连连接地址
     local direct_host=""
     local direct_yaml_host=""
     local snell_host=""
@@ -627,7 +681,7 @@ EOF
 EOF
     fi
 
-    # (G) Snell-V6 节点 (优先绑定公网 IPv6，若无则回退 IPv4)
+    # (G) Snell-V6 节点
     local snell_display_line=""
     if [ $snell_installed -eq 1 ]; then
         if [ -n "$server_ipv6" ]; then
@@ -669,7 +723,7 @@ rules:
   - MATCH,PROXY
 EOF
 
-    # 生成 Base64 通用订阅
+    show_progress 98 "正在编码 Base64 订阅并拉起本地 HTTP 订阅服务..."
     if [ "$OS_NAME" == "Alpine" ]; then
         base64 /opt/suoha_quick/nodes.txt | tr -d '\n' > /opt/suoha_quick/sub.txt
     else
@@ -725,6 +779,8 @@ ${clash_online_url}
 =====================================================================
 EOF
 
+    show_progress 100 "全部 7 种协议部署完成！"
+    sleep 0.6
     clear
     cat /opt/suoha_quick/v2ray.txt
     echo -e "\n所有配置已保存至 /opt/suoha_quick/v2ray.txt，随时执行 cat /opt/suoha_quick/v2ray.txt 查看。"
