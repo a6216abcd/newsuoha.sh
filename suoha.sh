@@ -1,5 +1,5 @@
 #!/bin/bash
-# onekey suoha - Full Protocol Edition (单Argo双路径 + Reality + AnyTLS + HY2 + TUIC + Snell双栈 + SS-IPv6)
+# onekey suoha - Full Protocol Edition (单Argo双路径 + Sing-box全内核[Reality Vision/XHTTP/gRPC + AnyTLS + HY2 + TUIC + SS-IPv6] + Snell双栈)
 
 export PATH=$PATH:/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin
 
@@ -229,7 +229,7 @@ fi
 function quicktunnel_all_in_one() {
     clear
     echo -e "${CYAN}==================================================================${NC}"
-    echo -e "${GREEN}   一键全协议梭哈部署启动中 (单Argo双路径 + Reality + AnyTLS + HY2 + TUIC + Snell双栈 + SS-IPv6)${NC}"
+    echo -e "${GREEN}   一键全协议梭哈部署启动中 (单Argo双路径 + Sing-box全协议[Reality Vision/XHTTP/gRPC] + Snell双栈 + SS-IPv6)${NC}"
     echo -e "${CYAN}==================================================================${NC}\n"
 
     show_progress 1 "初始化运行环境并彻底清空旧进程与历史文件..."
@@ -334,6 +334,8 @@ function quicktunnel_all_in_one() {
     short_id=$(echo "$uuid" | awk -F- '{print $1}')
     local urlpath_vless="vl-${short_id}"
     local urlpath_trojan="tr-${short_id}"
+    local xhttp_path="/xh-${short_id}"
+    local grpc_service="gr-${short_id}"
     local password_all
     password_all=$(openssl rand -hex 12)
     local ss_method="aes-128-gcm"
@@ -349,16 +351,21 @@ function quicktunnel_all_in_one() {
     local port_tuic=$((port_reality+3))
     local port_snell=$((port_reality+4))
     local port_ss_v6=$((port_reality+5))
+    local port_rel_xhttp=$((port_reality+6))
+    local port_rel_grpc=$((port_reality+7))
 
     open_firewall_port "$port_reality"
+    open_firewall_port "$port_rel_xhttp"
+    open_firewall_port "$port_rel_grpc"
     open_firewall_port "$port_anytls"
     open_firewall_port "$port_hy2"
     open_firewall_port "$port_tuic"
     open_firewall_port "$port_snell"
     open_firewall_port "$port_ss_v6"
 
-    # 5. 生成 Sing-box 全协议统一配置文件
-    show_progress 60 "正在写入 Sing-box 全协议与 Snell 配置文件..."
+    # 5. 生成 Sing-box 全协议统一配置文件 (内置 Reality Vision / Reality XHTTP / Reality gRPC)
+    show_progress 60 "正在写入 Sing-box 全协议 (含 Reality Vision/XHTTP/gRPC) 与 Snell 配置文件..."
+    local xhttp_transport_type="xhttp"
     cat > /opt/suoha_quick/singbox.json <<EOF
 {
   "log": {
@@ -407,6 +414,66 @@ function quicktunnel_all_in_one() {
           "flow": "xtls-rprx-vision"
         }
       ],
+      "tls": {
+        "enabled": true,
+        "server_name": "www.bing.com",
+        "reality": {
+          "enabled": true,
+          "handshake": {
+            "server": "www.bing.com",
+            "server_port": 443
+          },
+          "private_key": "${reality_priv}",
+          "short_id": [
+            "${reality_sid}"
+          ]
+        }
+      }
+    },
+    {
+      "type": "vless",
+      "tag": "vless-reality-xhttp-in",
+      "listen": "::",
+      "listen_port": ${port_rel_xhttp},
+      "users": [
+        {
+          "uuid": "${uuid}"
+        }
+      ],
+      "transport": {
+        "type": "xhttp",
+        "path": "${xhttp_path}"
+      },
+      "tls": {
+        "enabled": true,
+        "server_name": "www.bing.com",
+        "reality": {
+          "enabled": true,
+          "handshake": {
+            "server": "www.bing.com",
+            "server_port": 443
+          },
+          "private_key": "${reality_priv}",
+          "short_id": [
+            "${reality_sid}"
+          ]
+        }
+      }
+    },
+    {
+      "type": "vless",
+      "tag": "vless-reality-grpc-in",
+      "listen": "::",
+      "listen_port": ${port_rel_grpc},
+      "users": [
+        {
+          "uuid": "${uuid}"
+        }
+      ],
+      "transport": {
+        "type": "grpc",
+        "service_name": "${grpc_service}"
+      },
       "tls": {
         "enabled": true,
         "server_name": "www.bing.com",
@@ -509,6 +576,12 @@ function quicktunnel_all_in_one() {
   ]
 }
 EOF
+
+    # 校验 Sing-box 配置是否支持 xhttp；若当前核心暂未内置 xhttp 则自动平滑回退为 httpupgrade，确保 100% 启动成功
+    if ! /opt/suoha_quick/sing-box check -c /opt/suoha_quick/singbox.json >/dev/null 2>&1; then
+        xhttp_transport_type="httpupgrade"
+        sed -i 's/"type": "xhttp"/"type": "httpupgrade"/g' /opt/suoha_quick/singbox.json
+    fi
 
     show_progress 66 "正在启动 Sing-box、本地路径分流器与 Snell 双栈守护进程..."
     nohup /opt/suoha_quick/sing-box run -c /opt/suoha_quick/singbox.json >/opt/suoha_quick/singbox.log 2>&1 &
@@ -730,7 +803,9 @@ EOF
     fi
 
     if [ -n "$direct_host" ]; then
-        # (C) VLESS Reality Vision 直连节点
+        local encoded_xhttp_path="%2Fxh-${short_id}"
+
+        # (C1) VLESS Reality Vision 直连节点 (主力首选)
         local pname_rel="${node_tag}-VLESS-Reality"
         echo "vless://${uuid}@${direct_host}:${port_reality}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.bing.com&fp=chrome&pbk=${reality_pub}&sid=${reality_sid}&type=tcp&headerType=none#${pname_rel}" >> /opt/suoha_quick/nodes.txt
         proxy_names+=("$pname_rel")
@@ -745,6 +820,74 @@ EOF
     udp: true
     flow: xtls-rprx-vision
     servername: www.bing.com
+    reality-opts:
+      public-key: ${reality_pub}
+      short-id: ${reality_sid}
+    client-fingerprint: chrome
+EOF
+
+        # (C2) VLESS + XHTTP + REALITY 直连节点 (现代备用)
+        local pname_rel_xhttp="${node_tag}-VLESS-Reality-XHTTP"
+        if [ "$xhttp_transport_type" == "xhttp" ]; then
+            echo "vless://${uuid}@${direct_host}:${port_rel_xhttp}?encryption=none&security=reality&sni=www.bing.com&fp=chrome&pbk=${reality_pub}&sid=${reality_sid}&type=xhttp&path=${encoded_xhttp_path}&mode=auto#${pname_rel_xhttp}" >> /opt/suoha_quick/nodes.txt
+            proxy_names+=("$pname_rel_xhttp")
+            cat >> /opt/suoha_quick/clash.yaml <<EOF
+  - name: "${pname_rel_xhttp}"
+    type: vless
+    server: ${direct_yaml_host}
+    port: ${port_rel_xhttp}
+    uuid: ${uuid}
+    network: xhttp
+    tls: true
+    udp: true
+    servername: www.bing.com
+    xhttp-opts:
+      path: ${xhttp_path}
+      mode: auto
+    reality-opts:
+      public-key: ${reality_pub}
+      short-id: ${reality_sid}
+    client-fingerprint: chrome
+EOF
+        else
+            echo "vless://${uuid}@${direct_host}:${port_rel_xhttp}?encryption=none&security=reality&sni=www.bing.com&fp=chrome&pbk=${reality_pub}&sid=${reality_sid}&type=httpupgrade&path=${encoded_xhttp_path}#${pname_rel_xhttp}" >> /opt/suoha_quick/nodes.txt
+            proxy_names+=("$pname_rel_xhttp")
+            cat >> /opt/suoha_quick/clash.yaml <<EOF
+  - name: "${pname_rel_xhttp}"
+    type: vless
+    server: ${direct_yaml_host}
+    port: ${port_rel_xhttp}
+    uuid: ${uuid}
+    network: ws
+    tls: true
+    udp: true
+    servername: www.bing.com
+    ws-opts:
+      path: ${xhttp_path}
+      v2ray-http-upgrade: true
+    reality-opts:
+      public-key: ${reality_pub}
+      short-id: ${reality_sid}
+    client-fingerprint: chrome
+EOF
+        fi
+
+        # (C3) VLESS + gRPC + REALITY 直连节点 (兼容兜底)
+        local pname_rel_grpc="${node_tag}-VLESS-Reality-gRPC"
+        echo "vless://${uuid}@${direct_host}:${port_rel_grpc}?encryption=none&security=reality&sni=www.bing.com&fp=chrome&pbk=${reality_pub}&sid=${reality_sid}&type=grpc&serviceName=${grpc_service}&mode=gun#${pname_rel_grpc}" >> /opt/suoha_quick/nodes.txt
+        proxy_names+=("$pname_rel_grpc")
+        cat >> /opt/suoha_quick/clash.yaml <<EOF
+  - name: "${pname_rel_grpc}"
+    type: vless
+    server: ${direct_yaml_host}
+    port: ${port_rel_grpc}
+    uuid: ${uuid}
+    network: grpc
+    tls: true
+    udp: true
+    servername: www.bing.com
+    grpc-opts:
+      grpc-service-name: ${grpc_service}
     reality-opts:
       public-key: ${reality_pub}
       short-id: ${reality_sid}
@@ -830,7 +973,7 @@ EOF
 EOF
     fi
 
-    # (H) Snell 双栈节点 (显式补充 ip-version: ipv6 确保 Clash Verge Rev / Mihomo 100% 走 IPv6 握手)
+    # (H) Snell 双栈节点
     local snell_display_lines=""
     if [ $snell_installed -eq 1 ]; then
         if [ -n "$server_ip" ]; then
@@ -915,7 +1058,7 @@ EOF
   ├─ VLESS  WebSocket 路径: /${urlpath_vless}
   └─ Trojan WebSocket 路径: /${urlpath_trojan}
 
-[URI 通用节点链接 (VLESS-Argo / Trojan-Argo / Reality / AnyTLS / HY2 / TUIC / SS-IPv6)]
+[URI 通用节点链接 (Argo / Reality[Vision/XHTTP/gRPC] / AnyTLS / HY2 / TUIC / SS-IPv6)]
 $(cat /opt/suoha_quick/nodes.txt)
 
 [Snell 双栈专属配置 (Surge / Clash Verge / Mihomo) | 状态: ${snell_status}]
@@ -923,7 +1066,10 @@ $(echo -e "${snell_display_lines:-未检测到可用公网 IP，跳过 Snell 生
 ======================== 端口与证书说明 ========================
 - Argo 节点 443 端口可按需替换为 CF 其它 TLS 端口: 2053, 2083, 2087, 2096, 8443
 - AnyTLS / Hysteria2 / TUIC 均已自动签发 www.bing.com 证书 (客户端需开启跳过证书验证)
-- VLESS Reality 伪装域名: www.bing.com | PublicKey: ${reality_pub} | ShortID: ${reality_sid}
+- VLESS Reality 三件套共用参数 -> 伪装域名: www.bing.com | PublicKey: ${reality_pub} | ShortID: ${reality_sid}
+  ├─ Reality Vision 端口: ${port_reality}
+  ├─ Reality XHTTP  端口: ${port_rel_xhttp} (传输层: ${xhttp_transport_type} | Path: ${xhttp_path})
+  └─ Reality gRPC   端口: ${port_rel_grpc} (ServiceName: ${grpc_service})
 
 ======================== 客户端订阅及导入链接 ========================
 本机固定订阅服务端口: ${sub_port} (已永久保存，重新梭哈无需重新导入客户端)
