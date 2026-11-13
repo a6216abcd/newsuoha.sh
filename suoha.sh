@@ -1,5 +1,5 @@
 #!/bin/bash
-# onekey suoha - Full Protocol Edition (Argo VLESS/Trojan + Reality + AnyTLS + HY2 + TUIC + Snell)
+# onekey suoha - Full Protocol Edition (单Argo双路径 + Reality + AnyTLS + HY2 + TUIC + Snell + SS-IPv6)
 
 export PATH=$PATH:/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin
 
@@ -172,8 +172,10 @@ function sync_to_static_web() {
 
 function stop_all_services() {
     safe_kill_pidfile "/opt/suoha_quick/singbox.pid"
+    safe_kill_pidfile "/opt/suoha_quick/cf_main.pid"
     safe_kill_pidfile "/opt/suoha_quick/cf_vl.pid"
     safe_kill_pidfile "/opt/suoha_quick/cf_tr.pid"
+    safe_kill_pidfile "/opt/suoha_quick/argo_router.pid"
     safe_kill_pidfile "/opt/suoha_quick/snell.pid"
     safe_kill_pidfile "/opt/suoha_quick/snell_v6.pid"
     safe_kill_pidfile "/opt/suoha_quick/sub_http.pid"
@@ -218,14 +220,14 @@ fi
 function quicktunnel_all_in_one() {
     clear
     echo -e "${CYAN}==================================================================${NC}"
-    echo -e "${GREEN}   一键全协议梭哈部署启动中 (Argo + Reality + AnyTLS + HY2 + TUIC + Snell)${NC}"
+    echo -e "${GREEN}   一键全协议梭哈部署启动中 (单Argo双路径 + Reality + AnyTLS + HY2 + TUIC + Snell + SS-IPv6)${NC}"
     echo -e "${CYAN}==================================================================${NC}\n"
 
-    show_progress 1 "初始化运行环境并清理旧进程..."
+    show_progress 1 "初始化运行环境并彻底清空旧进程与历史文件..."
     stop_all_services
     install_deps
 
-    rm -rf /opt/suoha_quick
+    rm -rf /opt/suoha /opt/suoha_quick /var/www/suoha_sub
     mkdir -p /opt/suoha_quick/cert >/dev/null 2>&1
     cd /opt/suoha_quick || exit 1
 
@@ -277,7 +279,6 @@ function quicktunnel_all_in_one() {
     show_progress 34 "正在下载 Cloudflare Argo 隧道组件..."
     curl -sL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-${arch_cf}" -o /opt/suoha_quick/cloudflared-linux
 
-    # 下载官方稳定版 Snell v4.1.1 (所有 Clash Verge / Mihomo 版本 100% 原生支持 version: 4)
     show_progress 44 "正在下载官方 Snell v4.1.1 双栈服务端..."
     curl -sL "https://dl.nssurge.com/snell/snell-server-v4.1.1-${arch_snell}.zip" -o snell.zip
     if [ -s snell.zip ] && unzip -t snell.zip >/dev/null 2>&1; then
@@ -319,22 +320,28 @@ function quicktunnel_all_in_one() {
     local urlpath_trojan="tr-${short_id}"
     local password_all
     password_all=$(openssl rand -hex 12)
+    local ss_method="aes-128-gcm"
+    local ss_password
+    ss_password=$(openssl rand -hex 12)
 
-    local port_argo_vl=$((RANDOM%10000+11000))
-    local port_argo_tr=$((port_argo_vl+1))
+    local port_argo_entry=$((RANDOM%10000+11000))
+    local port_argo_vl=$((port_argo_entry+1))
+    local port_argo_tr=$((port_argo_entry+2))
     local port_reality=$((RANDOM%10000+21000))
     local port_anytls=$((port_reality+1))
     local port_hy2=$((port_reality+2))
     local port_tuic=$((port_reality+3))
     local port_snell=$((port_reality+4))
+    local port_ss_v6=$((port_reality+5))
 
     open_firewall_port "$port_reality"
     open_firewall_port "$port_anytls"
     open_firewall_port "$port_hy2"
     open_firewall_port "$port_tuic"
     open_firewall_port "$port_snell"
+    open_firewall_port "$port_ss_v6"
 
-    # 4. 生成 Sing-box 全协议统一配置文件
+    # 4. 生成 Sing-box 全协议统一配置文件 (新增 ss-ipv6-in 入站)
     show_progress 60 "正在写入 Sing-box 全协议与 Snell 配置文件..."
     cat > /opt/suoha_quick/singbox.json <<EOF
 {
@@ -468,6 +475,14 @@ function quicktunnel_all_in_one() {
         "certificate_path": "/opt/suoha_quick/cert/bing.crt",
         "key_path": "/opt/suoha_quick/cert/bing.key"
       }
+    },
+    {
+      "type": "shadowsocks",
+      "tag": "ss-ipv6-in",
+      "listen": "::",
+      "listen_port": ${port_ss_v6},
+      "method": "${ss_method}",
+      "password": "${ss_password}"
     }
   ],
   "outbounds": [
@@ -479,9 +494,60 @@ function quicktunnel_all_in_one() {
 }
 EOF
 
-    show_progress 66 "正在启动 Sing-box 与 Snell 核心守护进程..."
+    show_progress 66 "正在启动 Sing-box、本地路径分流器与 Snell 核心守护进程..."
     nohup /opt/suoha_quick/sing-box run -c /opt/suoha_quick/singbox.json >/opt/suoha_quick/singbox.log 2>&1 &
     echo $! > /opt/suoha_quick/singbox.pid
+
+    # 轻量本地 WebSocket 路径分流守护进程 (单 Argo 域名按请求路径分发 /vl-xxx 与 /tr-xxx)
+    cat > /opt/suoha_quick/argo_router.py <<EOF
+import asyncio
+
+async def relay(reader, writer):
+    try:
+        while True:
+            chunk = await reader.read(32768)
+            if not chunk:
+                break
+            writer.write(chunk)
+            await writer.drain()
+    except Exception:
+        pass
+    finally:
+        try:
+            writer.close()
+        except Exception:
+            pass
+
+async def handle_client(client_reader, client_writer):
+    try:
+        head = await asyncio.wait_for(client_reader.readuntil(b"\r\n\r\n"), timeout=10.0)
+        first_line = head.split(b"\r\n", 1)[0]
+        target_port = ${port_argo_vl}
+        if b"/${urlpath_trojan}" in first_line:
+            target_port = ${port_argo_tr}
+        upstream_reader, upstream_writer = await asyncio.open_connection("127.0.0.1", target_port)
+        upstream_writer.write(head)
+        await upstream_writer.drain()
+        await asyncio.gather(
+            relay(client_reader, upstream_writer),
+            relay(upstream_reader, client_writer)
+        )
+    except Exception:
+        try:
+            client_writer.close()
+        except Exception:
+            pass
+
+async def main():
+    server = await asyncio.start_server(handle_client, "127.0.0.1", ${port_argo_entry})
+    async with server:
+        await server.serve_forever()
+
+if __name__ == "__main__":
+    asyncio.run(main())
+EOF
+    nohup python3 /opt/suoha_quick/argo_router.py >/dev/null 2>&1 &
+    echo $! > /opt/suoha_quick/argo_router.pid
 
     local snell_psk
     snell_psk=$(openssl rand -base64 24 | tr -dc 'a-zA-Z0-9' | head -c 24)
@@ -513,7 +579,7 @@ EOF
         fi
     fi
 
-    # 5. 自动探测出口 IP 协议栈并拉起双 Argo 隧道
+    # 5. 自动探测出口 IP 协议栈并拉起单个 Cloudflare Argo 隧道 (双协议共用同一 Argo 域名)
     show_progress 70 "正在探测服务器双栈公网 IP 与机房归属..."
     local server_ip
     server_ip=$(get_server_ip)
@@ -533,24 +599,19 @@ EOF
         node_tag="Suoha_Node"
     fi
 
-    show_progress 74 "正在建立 Cloudflare Argo 双协议临时隧道..."
-    /opt/suoha_quick/cloudflared-linux tunnel --url "http://127.0.0.1:${port_argo_vl}" --no-autoupdate --edge-ip-version "$ips" --protocol http2 > /opt/suoha_quick/argo_vless.log 2>&1 &
-    echo $! > /opt/suoha_quick/cf_vl.pid
-
-    /opt/suoha_quick/cloudflared-linux tunnel --url "http://127.0.0.1:${port_argo_tr}" --no-autoupdate --edge-ip-version "$ips" --protocol http2 > /opt/suoha_quick/argo_trojan.log 2>&1 &
-    echo $! > /opt/suoha_quick/cf_tr.pid
+    show_progress 74 "正在建立单 Argo 隧道 (VLESS /${urlpath_vless} + Trojan /${urlpath_trojan})..."
+    /opt/suoha_quick/cloudflared-linux tunnel --url "http://127.0.0.1:${port_argo_entry}" --no-autoupdate --edge-ip-version "$ips" --protocol http2 > /opt/suoha_quick/argo_main.log 2>&1 &
+    echo $! > /opt/suoha_quick/cf_main.pid
 
     local wait_sec=0
-    local argo_vl=""
-    local argo_tr=""
+    local argo_domain=""
     while true; do
         wait_sec=$((wait_sec+1))
-        argo_vl=$(grep -oE "https://[a-zA-Z0-9.-]+\.trycloudflare\.com" /opt/suoha_quick/argo_vless.log 2>/dev/null | head -n 1 | awk -F// '{print $2}')
-        argo_tr=$(grep -oE "https://[a-zA-Z0-9.-]+\.trycloudflare\.com" /opt/suoha_quick/argo_trojan.log 2>/dev/null | head -n 1 | awk -F// '{print $2}')
+        argo_domain=$(grep -oE "https://[a-zA-Z0-9.-]+\.trycloudflare\.com" /opt/suoha_quick/argo_main.log 2>/dev/null | head -n 1 | awk -F// '{print $2}')
 
-        if [ -n "$argo_vl" ] && [ -n "$argo_tr" ]; then
-            rm -f /opt/suoha_quick/argo_vless.log /opt/suoha_quick/argo_trojan.log
-            show_progress 92 "Argo 双协议隧道域名分配成功！"
+        if [ -n "$argo_domain" ]; then
+            rm -f /opt/suoha_quick/argo_main.log
+            show_progress 92 "Argo 单域名双路径隧道分配成功: ${argo_domain}"
             break
         fi
 
@@ -558,22 +619,15 @@ EOF
         if [ $dynamic_pct -gt 91 ]; then
             dynamic_pct=91
         fi
-        local status_vl="等待中"
-        local status_tr="等待中"
-        [ -n "$argo_vl" ] && status_vl="已就绪"
-        [ -n "$argo_tr" ] && status_tr="已就绪"
-        show_progress $dynamic_pct "等待 Argo 分配域名 (VLESS:${status_vl} | Trojan:${status_tr}) [${wait_sec}s]..."
+        show_progress $dynamic_pct "等待 Argo 分配双协议共用域名 [${wait_sec}s]..."
 
         if [ $wait_sec -ge 25 ]; then
             wait_sec=0
-            safe_kill_pidfile "/opt/suoha_quick/cf_vl.pid"
-            safe_kill_pidfile "/opt/suoha_quick/cf_tr.pid"
-            rm -f /opt/suoha_quick/argo_vless.log /opt/suoha_quick/argo_trojan.log
-            show_progress 75 "Argo 获取超时，正在自动重连建立双隧道..."
-            /opt/suoha_quick/cloudflared-linux tunnel --url "http://127.0.0.1:${port_argo_vl}" --no-autoupdate --edge-ip-version "$ips" --protocol http2 > /opt/suoha_quick/argo_vless.log 2>&1 &
-            echo $! > /opt/suoha_quick/cf_vl.pid
-            /opt/suoha_quick/cloudflared-linux tunnel --url "http://127.0.0.1:${port_argo_tr}" --no-autoupdate --edge-ip-version "$ips" --protocol http2 > /opt/suoha_quick/argo_trojan.log 2>&1 &
-            echo $! > /opt/suoha_quick/cf_tr.pid
+            safe_kill_pidfile "/opt/suoha_quick/cf_main.pid"
+            rm -f /opt/suoha_quick/argo_main.log
+            show_progress 75 "Argo 获取超时，正在自动切换 QUIC 重连建立隧道..."
+            /opt/suoha_quick/cloudflared-linux tunnel --url "http://127.0.0.1:${port_argo_entry}" --no-autoupdate --edge-ip-version "$ips" --protocol quic > /opt/suoha_quick/argo_main.log 2>&1 &
+            echo $! > /opt/suoha_quick/cf_main.pid
             sleep 2
         else
             sleep 1
@@ -599,14 +653,15 @@ EOF
     local opt_domains=("cf.090227.xyz" "cloudflare.182682.xyz")
     local opt_labels=("优选cf.090227" "优选182682")
 
-    # (A) VLESS Argo 节点组
-    local vless_domains=("$argo_vl" "${opt_domains[@]}")
-    local vless_labels=("默认Argo" "${opt_labels[@]}")
-    for idx in "${!vless_domains[@]}"; do
-        local d="${vless_domains[$idx]}"
-        local l="${vless_labels[$idx]}"
+    local argo_domains=("$argo_domain" "${opt_domains[@]}")
+    local argo_labels=("默认Argo" "${opt_labels[@]}")
+
+    # (A) VLESS Argo 节点组 (使用路径 /${urlpath_vless})
+    for idx in "${!argo_domains[@]}"; do
+        local d="${argo_domains[$idx]}"
+        local l="${argo_labels[$idx]}"
         local pname="${node_tag}-VLESS-${l}-443"
-        echo "vless://${uuid}@${d}:443?encryption=none&security=tls&sni=${argo_vl}&type=ws&host=${argo_vl}&path=%2F${urlpath_vless}#${pname}" >> /opt/suoha_quick/nodes.txt
+        echo "vless://${uuid}@${d}:443?encryption=none&security=tls&sni=${argo_domain}&type=ws&host=${argo_domain}&path=%2F${urlpath_vless}#${pname}" >> /opt/suoha_quick/nodes.txt
         proxy_names+=("$pname")
         cat >> /opt/suoha_quick/clash.yaml <<EOF
   - name: "${pname}"
@@ -617,23 +672,21 @@ EOF
     cipher: auto
     tls: true
     udp: true
-    servername: ${argo_vl}
+    servername: ${argo_domain}
     network: ws
     ws-opts:
       path: /${urlpath_vless}
       headers:
-        Host: ${argo_vl}
+        Host: ${argo_domain}
 EOF
     done
 
-    # (B) Trojan Argo 节点组
-    local trojan_domains=("$argo_tr" "${opt_domains[@]}")
-    local trojan_labels=("默认Argo" "${opt_labels[@]}")
-    for idx in "${!trojan_domains[@]}"; do
-        local d="${trojan_domains[$idx]}"
-        local l="${trojan_labels[$idx]}"
+    # (B) Trojan Argo 节点组 (共用同一 Argo 域名，使用路径 /${urlpath_trojan})
+    for idx in "${!argo_domains[@]}"; do
+        local d="${argo_domains[$idx]}"
+        local l="${argo_labels[$idx]}"
         local pname="${node_tag}-Trojan-${l}-443"
-        echo "trojan://${uuid}@${d}:443?security=tls&sni=${argo_tr}&type=ws&host=${argo_tr}&path=%2F${urlpath_trojan}#${pname}" >> /opt/suoha_quick/nodes.txt
+        echo "trojan://${uuid}@${d}:443?security=tls&sni=${argo_domain}&type=ws&host=${argo_domain}&path=%2F${urlpath_trojan}#${pname}" >> /opt/suoha_quick/nodes.txt
         proxy_names+=("$pname")
         cat >> /opt/suoha_quick/clash.yaml <<EOF
   - name: "${pname}"
@@ -642,12 +695,12 @@ EOF
     port: 443
     password: ${uuid}
     udp: true
-    sni: ${argo_tr}
+    sni: ${argo_domain}
     network: ws
     ws-opts:
       path: /${urlpath_trojan}
       headers:
-        Host: ${argo_tr}
+        Host: ${argo_domain}
 EOF
     done
 
@@ -738,7 +791,32 @@ EOF
 EOF
     fi
 
-    # (G) Snell 节点 (固定使用 version: 4 保证 Clash Verge Rev 100% 零报错导入)
+    # (G) 原生 Shadowsocks IPv6 直连节点 (ss-ipv6)
+    local ss_v6_uri=""
+    if [ -n "$server_ipv6" ]; then
+        local ss_user_info="${ss_method}:${ss_password}"
+        local ss_base64=""
+        if [ "$OS_NAME" == "Alpine" ]; then
+            ss_base64=$(echo -n "$ss_user_info" | base64 | tr -d '\n')
+        else
+            ss_base64=$(echo -n "$ss_user_info" | base64 -w 0)
+        fi
+        local pname_ss6="${node_tag}-SS-IPv6"
+        ss_v6_uri="ss://${ss_base64}@[${server_ipv6}]:${port_ss_v6}#${pname_ss6}"
+        echo "$ss_v6_uri" >> /opt/suoha_quick/nodes.txt
+        proxy_names+=("$pname_ss6")
+        cat >> /opt/suoha_quick/clash.yaml <<EOF
+  - name: "${pname_ss6}"
+    type: ss
+    server: "${server_ipv6}"
+    port: ${port_ss_v6}
+    cipher: ${ss_method}
+    password: "${ss_password}"
+    udp: true
+EOF
+    fi
+
+    # (H) Snell 节点
     local snell_display_lines=""
     if [ $snell_installed -eq 1 ]; then
         if [ -n "$server_ip" ]; then
@@ -805,7 +883,7 @@ EOF
     elif [ -n "$server_ipv6" ]; then
         sub_host="[${server_ipv6}]"
     else
-        sub_host="$argo_vl"
+        sub_host="$argo_domain"
     fi
 
     local sub_port
@@ -818,7 +896,11 @@ EOF
 
     cat > /opt/suoha_quick/v2ray.txt <<EOF
 ======================== 一键全协议梭哈节点列表 ========================
-[URI 通用节点链接 (VLESS-Argo / Trojan-Argo / Reality / AnyTLS / HY2 / TUIC)]
+[单 Argo 共用域名]: ${argo_domain}
+  ├─ VLESS  WebSocket 路径: /${urlpath_vless}
+  └─ Trojan WebSocket 路径: /${urlpath_trojan}
+
+[URI 通用节点链接 (VLESS-Argo / Trojan-Argo / Reality / AnyTLS / HY2 / TUIC / SS-IPv6)]
 $(cat /opt/suoha_quick/nodes.txt)
 
 [Snell 专属配置 (Surge / Clash Verge / Mihomo) | 状态: ${snell_status}]
