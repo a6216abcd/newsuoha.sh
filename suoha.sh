@@ -164,7 +164,6 @@ function stop_all_services() {
     safe_kill_pidfile "/opt/suoha_quick/snell.pid"
     safe_kill_pidfile "/opt/suoha_quick/sub_http.pid"
 
-    # 仅按精确可执行文件名匹配，避免 pkill -f 误杀正在运行的 shell 脚本
     if command -v killall >/dev/null 2>&1; then
         killall -9 sing-box cloudflared-linux snell-server >/dev/null 2>&1
     else
@@ -265,12 +264,15 @@ function quicktunnel_all_in_one() {
     curl -sL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-${arch_cf}" -o /opt/suoha_quick/cloudflared-linux
 
     show_progress 44 "正在下载 Snell-server 双栈服务端..."
+    local snell_proto_ver=5
     curl -sL "https://dl.nssurge.com/snell/snell-server-v5.0.0-${arch_snell}.zip" -o snell.zip
     if [ -s snell.zip ] && unzip -t snell.zip >/dev/null 2>&1; then
         unzip -oq snell.zip -d /opt/suoha_quick/ >/dev/null 2>&1
+        snell_proto_ver=5
     else
         curl -sL "https://dl.nssurge.com/snell/snell-server-v4.1.1-${arch_snell}.zip" -o snell.zip
         unzip -oq snell.zip -d /opt/suoha_quick/ >/dev/null 2>&1
+        snell_proto_ver=4
     fi
     rm -f snell.zip
 
@@ -466,20 +468,46 @@ EOF
     nohup /opt/suoha_quick/sing-box run -c /opt/suoha_quick/singbox.json >/opt/suoha_quick/singbox.log 2>&1 &
     echo $! > /opt/suoha_quick/singbox.pid
 
+    # 修复 Snell IPv6 监听地址语法: 必须使用 [::]:端口
     local snell_psk
     snell_psk=$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9' | head -c 16)
     local snell_installed=0
+    local snell_status="未安装"
     if [ -x /opt/suoha_quick/snell-server ]; then
         cat > /opt/suoha_quick/snell.conf <<EOF
 [snell-server]
-listen = ::0:${port_snell}
+listen = [::]:${port_snell}
 psk = ${snell_psk}
 ipv6 = true
 obfs = off
 EOF
         nohup /opt/suoha_quick/snell-server -c /opt/suoha_quick/snell.conf >/opt/suoha_quick/snell.log 2>&1 &
-        echo $! > /opt/suoha_quick/snell.pid
-        snell_installed=1
+        local snell_pid=$!
+        echo $snell_pid > /opt/suoha_quick/snell.pid
+        sleep 1
+        if kill -0 "$snell_pid" 2>/dev/null; then
+            snell_installed=1
+            snell_status="运行正常 (PID: ${snell_pid}, 协议版本: v${snell_proto_ver})"
+        else
+            # 若个别内核禁用双栈绑定则回退 ::0
+            cat > /opt/suoha_quick/snell.conf <<EOF
+[snell-server]
+listen = 0.0.0.0:${port_snell}
+psk = ${snell_psk}
+ipv6 = true
+obfs = off
+EOF
+            nohup /opt/suoha_quick/snell-server -c /opt/suoha_quick/snell.conf >/opt/suoha_quick/snell.log 2>&1 &
+            snell_pid=$!
+            echo $snell_pid > /opt/suoha_quick/snell.pid
+            sleep 1
+            if kill -0 "$snell_pid" 2>/dev/null; then
+                snell_installed=1
+                snell_status="运行正常-IPv4回退 (PID: ${snell_pid}, 协议版本: v${snell_proto_ver})"
+            else
+                snell_status="启动失败，请检查 /opt/suoha_quick/snell.log"
+            fi
+        fi
     fi
 
     # 5. 自动探测出口 IP 协议栈并拉起双 Argo 隧道
@@ -707,7 +735,7 @@ EOF
 EOF
     fi
 
-    # (G) Snell-V6 节点
+    # (G) Snell-V6 节点 (动态匹配 v5 / v4 版本号)
     local snell_display_line=""
     if [ $snell_installed -eq 1 ]; then
         if [ -n "$server_ipv6" ]; then
@@ -725,10 +753,10 @@ EOF
     server: "${snell_host}"
     port: ${port_snell}
     psk: "${snell_psk}"
-    version: 4
+    version: ${snell_proto_ver}
     udp: true
 EOF
-            snell_display_line="${pname_snell} = snell, ${snell_host}, ${port_snell}, psk=${snell_psk}, version=4, reuse=true"
+            snell_display_line="${pname_snell} = snell, ${snell_host}, ${port_snell}, psk=${snell_psk}, version=${snell_proto_ver}, reuse=true"
             echo "$snell_display_line" > /opt/suoha_quick/surge.conf
         fi
     fi
@@ -778,7 +806,7 @@ EOF
 [URI 通用节点链接 (VLESS-Argo / Trojan-Argo / Reality / AnyTLS / HY2 / TUIC)]
 $(cat /opt/suoha_quick/nodes.txt)
 
-[Snell-V6 专属配置 (Surge / Clash.Meta / Mihomo)]
+[Snell-V6 专属配置 (Surge / Clash.Meta / Mihomo) | 状态: ${snell_status}]
 ${snell_display_line:-未检测到可用公网 IP，跳过 Snell 生成}
 
 ======================== 端口与证书说明 ========================
