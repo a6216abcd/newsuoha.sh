@@ -1,5 +1,5 @@
 #!/bin/bash
-# onekey suoha - Full Protocol Edition (官方Sing-box主力 + 魔改sing-box-extended/Xray兜底独立XHTTP + 单Argo双路径 + Snell双栈 + SS-IPv6)
+# onekey suoha - Full Protocol Edition (Sing-box主力 + Xray官方原生XHTTP引擎 + 单Argo双路径 + Snell双栈 + SS-IPv6)
 
 export PATH=$PATH:/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin
 
@@ -231,7 +231,7 @@ fi
 function quicktunnel_all_in_one() {
     clear
     echo -e "${CYAN}==================================================================${NC}"
-    echo -e "${GREEN}   一键全协议梭哈部署启动中 (官方Sing-box主力 + 魔改sing-box-extended/Xray独立XHTTP)${NC}"
+    echo -e "${GREEN}   一键全协议梭哈部署启动中 (Sing-box主力 + Xray原生XHTTP引擎 + 单Argo + Snell + SS-IPv6)${NC}"
     echo -e "${CYAN}==================================================================${NC}\n"
 
     show_progress 1 "初始化运行环境并彻底清空旧进程与历史文件..."
@@ -292,24 +292,12 @@ function quicktunnel_all_in_one() {
     mv "sing-box-${sb_version}-${arch_sb}/sing-box" /opt/suoha_quick/sing-box 2>/dev/null
     rm -rf "sing-box-${sb_version}-${arch_sb}" sb.tar.gz
 
-    show_progress 28 "正在下载魔改 sing-box-extended 核心 (独立承载 XHTTP)..."
-    local sb_ext_url=""
-    sb_ext_url=$(curl -s "https://api.github.com/repos/shtorm-7/sing-box-extended/releases/latest" | grep -oE "https://github\.com/shtorm-7/sing-box-extended/releases/download/[^\"]*${arch_sb}\.tar\.gz" | head -n 1)
-    if [ -n "$sb_ext_url" ]; then
-        curl -sL "$sb_ext_url" -o sb_ext.tar.gz
-    fi
-    if [ ! -s sb_ext.tar.gz ] || ! tar -tzf sb_ext.tar.gz >/dev/null 2>&1; then
-        rm -f sb_ext.tar.gz
-        curl -sL "https://github.com/yandexru45/sing-box-extended-lite/releases/latest/download/sing-box-extended-lite-${arch_sb}.tar.gz" -o sb_ext.tar.gz
-    fi
-    mkdir -p /opt/suoha_quick/tmp_ext
-    tar -xzf sb_ext.tar.gz -C /opt/suoha_quick/tmp_ext >/dev/null 2>&1
-    local found_ext_bin
-    found_ext_bin=$(find /opt/suoha_quick/tmp_ext -type f -name "sing-box" | head -n 1)
-    if [ -n "$found_ext_bin" ]; then
-        mv "$found_ext_bin" /opt/suoha_quick/sing-box-ext
-    fi
-    rm -rf /opt/suoha_quick/tmp_ext sb_ext.tar.gz
+    show_progress 28 "正在下载最新 Xray-core 原生 XHTTP 引擎..."
+    curl -sL "https://github.com/XTLS/Xray-core/releases/latest/download/${arch_xray}" -o xray.zip
+    mkdir -p /opt/suoha_quick/tmp_xray
+    unzip -oq xray.zip -d /opt/suoha_quick/tmp_xray >/dev/null 2>&1
+    mv /opt/suoha_quick/tmp_xray/xray /opt/suoha_quick/xray 2>/dev/null
+    rm -rf /opt/suoha_quick/tmp_xray xray.zip
 
     show_progress 36 "正在下载 Cloudflare Argo 隧道组件..."
     curl -sL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-${arch_cf}" -o /opt/suoha_quick/cloudflared-linux
@@ -322,7 +310,7 @@ function quicktunnel_all_in_one() {
     rm -f snell.zip
 
     chmod +x /opt/suoha_quick/sing-box /opt/suoha_quick/cloudflared-linux 2>/dev/null
-    [ -f /opt/suoha_quick/sing-box-ext ] && chmod +x /opt/suoha_quick/sing-box-ext
+    [ -f /opt/suoha_quick/xray ] && chmod +x /opt/suoha_quick/xray
     [ -f /opt/suoha_quick/snell-server ] && chmod +x /opt/suoha_quick/snell-server
 
     if [ ! -x /opt/suoha_quick/sing-box ] || [ ! -x /opt/suoha_quick/cloudflared-linux ]; then
@@ -573,84 +561,17 @@ function quicktunnel_all_in_one() {
 }
 EOF
 
-    # 6. 为魔改 sing-box-extended 生成独立 XHTTP 配置，并自动探测 "xhttp" 与 "v2rayxhttp" 字段名
-    show_progress 62 "正在配置并校验独立 XHTTP 服务端..."
+    # 6. 使用 Xray-core 原生引擎独立承载 XHTTP + REALITY (mode: stream-one 直连单流模式，100% 兼容 Mihomo 与 v2rayN)
+    show_progress 62 "正在配置并启动原生 XHTTP + REALITY 独立服务端..."
     local xhttp_ok=0
     local xhttp_status="未启动"
-
-    if [ -x /opt/suoha_quick/sing-box-ext ]; then
-        for t_type in "xhttp" "v2rayxhttp"; do
-            cat > /opt/suoha_quick/singbox_ext.json <<EOF
-{
-  "log": {
-    "level": "error",
-    "timestamp": true
-  },
-  "inbounds": [
-    {
-      "type": "vless",
-      "tag": "vless-reality-xhttp-in",
-      "listen": "::",
-      "listen_port": ${port_rel_xhttp},
-      "users": [
-        {
-          "uuid": "${uuid}"
-        }
-      ],
-      "transport": {
-        "type": "${t_type}",
-        "path": "${xhttp_path}"
-      },
-      "tls": {
-        "enabled": true,
-        "server_name": "www.bing.com",
-        "reality": {
-          "enabled": true,
-          "handshake": {
-            "server": "www.bing.com",
-            "server_port": 443
-          },
-          "private_key": "${reality_priv}",
-          "short_id": [
-            "${reality_sid}"
-          ]
-        }
-      }
-    }
-  ],
-  "outbounds": [
-    {
-      "type": "direct",
-      "tag": "direct"
-    }
-  ]
-}
-EOF
-            if /opt/suoha_quick/sing-box-ext check -c /opt/suoha_quick/singbox_ext.json >/dev/null 2>&1; then
-                nohup /opt/suoha_quick/sing-box-ext run -c /opt/suoha_quick/singbox_ext.json >/opt/suoha_quick/singbox_ext.log 2>&1 &
-                local sb_ext_pid=$!
-                echo $sb_ext_pid > /opt/suoha_quick/singbox_ext.pid
-                sleep 0.5
-                if kill -0 "$sb_ext_pid" 2>/dev/null; then
-                    xhttp_ok=1
-                    xhttp_status="魔改sing-box-ext运行正常 (类型:${t_type} | PID:${sb_ext_pid})"
-                    break
-                fi
-            fi
-        done
+    local xray_listen="0.0.0.0"
+    if [ -z "$server_ip" ] && [ -n "$server_ipv6" ]; then
+        xray_listen="::"
     fi
 
-    # 若魔改 sing-box-ext 因网络未下载或字段差异未启动，自动拉取 Xray-core 独立承载该 XHTTP 端口，保证 100% 可用
-    if [ $xhttp_ok -eq 0 ]; then
-        curl -sL "https://github.com/XTLS/Xray-core/releases/latest/download/${arch_xray}" -o xray.zip
-        if [ -s xray.zip ] && unzip -t xray.zip >/dev/null 2>&1; then
-            mkdir -p /opt/suoha_quick/tmp_xray
-            unzip -oq xray.zip -d /opt/suoha_quick/tmp_xray >/dev/null 2>&1
-            mv /opt/suoha_quick/tmp_xray/xray /opt/suoha_quick/xray 2>/dev/null
-            rm -rf /opt/suoha_quick/tmp_xray
-            chmod +x /opt/suoha_quick/xray 2>/dev/null
-
-            cat > /opt/suoha_quick/xray_xhttp.json <<EOF
+    if [ -x /opt/suoha_quick/xray ]; then
+        cat > /opt/suoha_quick/xray_xhttp.json <<EOF
 {
   "log": {
     "loglevel": "error"
@@ -658,7 +579,7 @@ EOF
   "inbounds": [
     {
       "tag": "reality-xhttp-in",
-      "listen": "::",
+      "listen": "${xray_listen}",
       "port": ${port_rel_xhttp},
       "protocol": "vless",
       "settings": {
@@ -672,8 +593,9 @@ EOF
       "streamSettings": {
         "network": "xhttp",
         "xhttpSettings": {
+          "host": "www.bing.com",
           "path": "${xhttp_path}",
-          "mode": "auto"
+          "mode": "stream-one"
         },
         "security": "reality",
         "realitySettings": {
@@ -688,6 +610,14 @@ EOF
             "${reality_sid}"
           ]
         }
+      },
+      "sniffing": {
+        "enabled": true,
+        "destOverride": [
+          "http",
+          "tls",
+          "quic"
+        ]
       }
     }
   ],
@@ -699,16 +629,18 @@ EOF
   ]
 }
 EOF
-            nohup /opt/suoha_quick/xray run -c /opt/suoha_quick/xray_xhttp.json >/opt/suoha_quick/xray_xhttp.log 2>&1 &
-            local xray_pid=$!
-            echo $xray_pid > /opt/suoha_quick/xray.pid
-            sleep 0.5
-            if kill -0 "$xray_pid" 2>/dev/null; then
-                xhttp_ok=1
-                xhttp_status="独立XHTTP引擎运行正常 (PID:${xray_pid})"
-            fi
+        nohup /opt/suoha_quick/xray run -c /opt/suoha_quick/xray_xhttp.json >/opt/suoha_quick/xray_xhttp.log 2>&1 &
+        local xray_pid=$!
+        echo $xray_pid > /opt/suoha_quick/xray.pid
+        sleep 0.6
+        if kill -0 "$xray_pid" 2>/dev/null; then
+            xhttp_ok=1
+            local xhttp_listen_info
+            xhttp_listen_info=$(ss -tlpn 2>/dev/null | grep "pid=${xray_pid}" | awk '{print $4}' | tr '\n' ' ')
+            xhttp_status="运行正常 (PID:${xray_pid} | 监听:${xhttp_listen_info:-${xray_listen}:${port_rel_xhttp}})"
+        else
+            xhttp_status="启动失败: $(cat /opt/suoha_quick/xray_xhttp.log 2>/dev/null | tr '\n' ' ')"
         fi
-        rm -f xray.zip
     fi
 
     show_progress 66 "正在启动官方 Sing-box 主力、本地分流器与 Snell 双栈守护进程..."
@@ -716,7 +648,7 @@ EOF
     local sb_pid=$!
     echo $sb_pid > /opt/suoha_quick/singbox.pid
 
-    # 轻量本地 WebSocket 路径分流守护进程 (单 Argo 域名按请求路径分发 /vl-xxx 与 /tr-xxx)
+    # 轻量本地 WebSocket 路径分流守护进程
     cat > /opt/suoha_quick/argo_router.py <<EOF
 import asyncio
 
@@ -960,9 +892,9 @@ EOF
     client-fingerprint: chrome
 EOF
 
-        # (C2) VLESS + XHTTP + REALITY 直连节点 (无条件输出至 nodes.txt 与 clash.yaml，确保导入必现)
+        # (C2) VLESS + XHTTP + REALITY 直连节点 (对齐 stream-one 与 host: www.bing.com)
         local pname_rel_xhttp="${node_tag}-VLESS-Reality-XHTTP"
-        echo "vless://${uuid}@${direct_host}:${port_rel_xhttp}?encryption=none&security=reality&sni=www.bing.com&fp=chrome&pbk=${reality_pub}&sid=${reality_sid}&type=xhttp&path=${encoded_xhttp_path}&mode=auto#${pname_rel_xhttp}" >> /opt/suoha_quick/nodes.txt
+        echo "vless://${uuid}@${direct_host}:${port_rel_xhttp}?encryption=none&security=reality&sni=www.bing.com&fp=chrome&pbk=${reality_pub}&sid=${reality_sid}&type=xhttp&host=www.bing.com&path=${encoded_xhttp_path}&mode=stream-one#${pname_rel_xhttp}" >> /opt/suoha_quick/nodes.txt
         proxy_names+=("$pname_rel_xhttp")
         cat >> /opt/suoha_quick/clash.yaml <<EOF
   - name: "${pname_rel_xhttp}"
@@ -975,8 +907,9 @@ EOF
     udp: true
     servername: www.bing.com
     xhttp-opts:
+      host: www.bing.com
       path: ${xhttp_path}
-      mode: auto
+      mode: stream-one
     reality-opts:
       public-key: ${reality_pub}
       short-id: ${reality_sid}
@@ -1184,7 +1117,7 @@ $(echo -e "${snell_display_lines:-未检测到可用公网 IP，跳过 Snell 生
 - AnyTLS / Hysteria2 / TUIC 均已自动签发 www.bing.com 证书 (客户端需开启跳过证书验证)
 - VLESS Reality 三件套共用参数 -> 伪装域名: www.bing.com | PublicKey: ${reality_pub} | ShortID: ${reality_sid}
   ├─ Reality Vision 端口: ${port_reality}
-  ├─ Reality XHTTP  端口: ${port_rel_xhttp} (Path: ${xhttp_path})
+  ├─ Reality XHTTP  端口: ${port_rel_xhttp} (Path: ${xhttp_path} | Mode: stream-one)
   └─ Reality gRPC   端口: ${port_rel_grpc} (ServiceName: ${grpc_service})
 
 ======================== 客户端订阅及导入链接 ========================
