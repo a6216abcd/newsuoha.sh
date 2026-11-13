@@ -1,5 +1,5 @@
 #!/bin/bash
-# onekey suoha - Full Protocol Edition (Argo VLESS/Trojan + Reality + AnyTLS + HY2 + TUIC + Snell-v6)
+# onekey suoha - Full Protocol Edition (Argo VLESS/Trojan + Reality + AnyTLS + HY2 + TUIC + Snell v6)
 
 export PATH=$PATH:/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin
 
@@ -13,7 +13,7 @@ YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m'
 
-# 纯 ASCII 零乱码动态进度条渲染函数: show_progress <百分比 0-100> <当前任务描述>
+# 纯 ASCII 零乱码动态进度条渲染函数
 function show_progress() {
     local pct=$1
     local msg="$2"
@@ -104,6 +104,23 @@ function get_server_ipv6() {
         ip6=$(ip -6 addr show scope global 2>/dev/null | grep inet6 | awk '{print $2}' | cut -d/ -f1 | head -n 1 | tr -d '\n\r ')
     fi
     echo "$ip6"
+}
+
+# 自动放行本机防火墙端口（如果开启了 ufw / firewalld）
+function open_firewall_port() {
+    local port="$1"
+    if command -v ufw >/dev/null 2>&1; then
+        if ufw status 2>/dev/null | grep -q "Status: active"; then
+            ufw allow "${port}/tcp" >/dev/null 2>&1
+            ufw allow "${port}/udp" >/dev/null 2>&1
+        fi
+    fi
+    if command -v firewall-cmd >/dev/null 2>&1; then
+        if systemctl is-active --quiet firewalld 2>/dev/null; then
+            firewall-cmd --zone=public --add-port="${port}/tcp" >/dev/null 2>&1
+            firewall-cmd --zone=public --add-port="${port}/udp" >/dev/null 2>&1
+        fi
+    fi
 }
 
 function get_or_create_sub_port() {
@@ -204,7 +221,7 @@ fi
 function quicktunnel_all_in_one() {
     clear
     echo -e "${CYAN}==================================================================${NC}"
-    echo -e "${GREEN}   一键全协议梭哈部署启动中 (Argo + Reality + AnyTLS + HY2 + TUIC + Snell-v6)${NC}"
+    echo -e "${GREEN}   一键全协议梭哈部署启动中 (Argo + Reality + AnyTLS + HY2 + TUIC + Snell v6)${NC}"
     echo -e "${CYAN}==================================================================${NC}\n"
 
     show_progress 1 "初始化运行环境并清理旧进程..."
@@ -263,16 +280,20 @@ function quicktunnel_all_in_one() {
     show_progress 34 "正在下载 Cloudflare Argo 隧道组件..."
     curl -sL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-${arch_cf}" -o /opt/suoha_quick/cloudflared-linux
 
-    show_progress 44 "正在下载 Snell-server 双栈服务端..."
-    local snell_proto_ver=5
-    curl -sL "https://dl.nssurge.com/snell/snell-server-v5.0.0-${arch_snell}.zip" -o snell.zip
+    # 下载 Surge 官方 Snell Server v6.0.0 (适配 Mihomo PR #3410 Snell v6 协议)
+    show_progress 44 "正在下载官方 Snell-server v6.0.0 服务端..."
+    local snell_proto_ver=6
+    curl -sL "https://dl.nssurge.com/snell/snell-server-v6.0.0-${arch_snell}.zip" -o snell.zip
     if [ -s snell.zip ] && unzip -t snell.zip >/dev/null 2>&1; then
         unzip -oq snell.zip -d /opt/suoha_quick/ >/dev/null 2>&1
-        snell_proto_ver=5
+        snell_proto_ver=6
     else
-        curl -sL "https://dl.nssurge.com/snell/snell-server-v4.1.1-${arch_snell}.zip" -o snell.zip
-        unzip -oq snell.zip -d /opt/suoha_quick/ >/dev/null 2>&1
-        snell_proto_ver=4
+        # 若当前架构暂未提供 v6.0.0（如 armv7l），自动降级至 v5.0.1
+        curl -sL "https://dl.nssurge.com/snell/snell-server-v5.0.1-${arch_snell}.zip" -o snell.zip
+        if [ -s snell.zip ] && unzip -t snell.zip >/dev/null 2>&1; then
+            unzip -oq snell.zip -d /opt/suoha_quick/ >/dev/null 2>&1
+            snell_proto_ver=5
+        fi
     fi
     rm -f snell.zip
 
@@ -319,8 +340,15 @@ function quicktunnel_all_in_one() {
     local port_tuic=$((port_reality+3))
     local port_snell=$((port_reality+4))
 
+    # 自动放行本机防火墙对应直连端口
+    open_firewall_port "$port_reality"
+    open_firewall_port "$port_anytls"
+    open_firewall_port "$port_hy2"
+    open_firewall_port "$port_tuic"
+    open_firewall_port "$port_snell"
+
     # 4. 生成 Sing-box 全协议统一配置文件
-    show_progress 60 "正在写入 Sing-box 全协议与 Snell-v6 配置文件..."
+    show_progress 60 "正在写入 Sing-box 全协议与 Snell v${snell_proto_ver} 配置文件..."
     cat > /opt/suoha_quick/singbox.json <<EOF
 {
   "log": {
@@ -464,48 +492,73 @@ function quicktunnel_all_in_one() {
 }
 EOF
 
-    show_progress 66 "正在启动 Sing-box 与 Snell-v6 核心守护进程..."
+    show_progress 66 "正在启动 Sing-box 与 Snell v${snell_proto_ver} 核心守护进程..."
     nohup /opt/suoha_quick/sing-box run -c /opt/suoha_quick/singbox.json >/opt/suoha_quick/singbox.log 2>&1 &
     echo $! > /opt/suoha_quick/singbox.pid
 
-    # 修复 Snell IPv6 监听地址语法: 必须使用 [::]:端口
+    # 生成 Snell v6 专属配置 (严格匹配 Surge v6.0.0 / Mihomo #3410 规范: 24位PSK, mode=default, dns-ip-preference)
     local snell_psk
-    snell_psk=$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9' | head -c 16)
+    snell_psk=$(openssl rand -base64 24 | tr -dc 'a-zA-Z0-9' | head -c 24)
     local snell_installed=0
     local snell_status="未安装"
+
     if [ -x /opt/suoha_quick/snell-server ]; then
-        cat > /opt/suoha_quick/snell.conf <<EOF
+        if [ $snell_proto_ver -eq 6 ]; then
+            cat > /opt/suoha_quick/snell.conf <<EOF
+[snell-server]
+listen = [::]:${port_snell}
+psk = ${snell_psk}
+mode = default
+dns-ip-preference = system
+EOF
+        else
+            cat > /opt/suoha_quick/snell.conf <<EOF
 [snell-server]
 listen = [::]:${port_snell}
 psk = ${snell_psk}
 ipv6 = true
 obfs = off
 EOF
+        fi
+
         nohup /opt/suoha_quick/snell-server -c /opt/suoha_quick/snell.conf >/opt/suoha_quick/snell.log 2>&1 &
         local snell_pid=$!
         echo $snell_pid > /opt/suoha_quick/snell.pid
         sleep 1
+
         if kill -0 "$snell_pid" 2>/dev/null; then
             snell_installed=1
-            snell_status="运行正常 (PID: ${snell_pid}, 协议版本: v${snell_proto_ver})"
+            local listen_check
+            listen_check=$(ss -tulpn 2>/dev/null | grep ":${port_snell}" | awk '{print $1" "$5}' | tr '\n' ' ')
+            snell_status="运行正常 (版本:v${snell_proto_ver} | PID:${snell_pid} | 监听:${listen_check:-已绑定})"
         else
-            # 若个别内核禁用双栈绑定则回退 ::0
-            cat > /opt/suoha_quick/snell.conf <<EOF
+            # 若系统内核禁用了 IPv6 套接字，自动回退为 0.0.0.0 监听
+            if [ $snell_proto_ver -eq 6 ]; then
+                cat > /opt/suoha_quick/snell.conf <<EOF
 [snell-server]
 listen = 0.0.0.0:${port_snell}
 psk = ${snell_psk}
-ipv6 = true
+mode = default
+dns-ip-preference = prefer-ipv4
+EOF
+            else
+                cat > /opt/suoha_quick/snell.conf <<EOF
+[snell-server]
+listen = 0.0.0.0:${port_snell}
+psk = ${snell_psk}
+ipv6 = false
 obfs = off
 EOF
+            fi
             nohup /opt/suoha_quick/snell-server -c /opt/suoha_quick/snell.conf >/opt/suoha_quick/snell.log 2>&1 &
             snell_pid=$!
             echo $snell_pid > /opt/suoha_quick/snell.pid
             sleep 1
             if kill -0 "$snell_pid" 2>/dev/null; then
                 snell_installed=1
-                snell_status="运行正常-IPv4回退 (PID: ${snell_pid}, 协议版本: v${snell_proto_ver})"
+                snell_status="运行正常-IPv4监听 (版本:v${snell_proto_ver} | PID:${snell_pid})"
             else
-                snell_status="启动失败，请检查 /opt/suoha_quick/snell.log"
+                snell_status="启动失败，日志: $(cat /opt/suoha_quick/snell.log 2>/dev/null | tr '\n' ' ')"
             fi
         fi
     fi
@@ -588,6 +641,7 @@ socks-port: 7891
 allow-lan: false
 mode: rule
 log-level: info
+ipv6: true
 proxies:
 EOF
 
@@ -650,7 +704,6 @@ EOF
     # 确定直连连接地址
     local direct_host=""
     local direct_yaml_host=""
-    local snell_host=""
     if [ -n "$server_ip" ]; then
         direct_host="$server_ip"
         direct_yaml_host="$server_ip"
@@ -735,29 +788,41 @@ EOF
 EOF
     fi
 
-    # (G) Snell-V6 节点 (动态匹配 v5 / v4 版本号)
-    local snell_display_line=""
+    # (G) Snell v6 节点 (兼容 Mihomo PR #3410 与 Surge v6)
+    local snell_display_lines=""
     if [ $snell_installed -eq 1 ]; then
-        if [ -n "$server_ipv6" ]; then
-            snell_host="$server_ipv6"
-        else
-            snell_host="$server_ip"
-        fi
-
-        if [ -n "$snell_host" ]; then
-            local pname_snell="${node_tag}-Snell-V6"
-            proxy_names+=("$pname_snell")
+        if [ -n "$server_ip" ]; then
+            local pname_snell_v4="${node_tag}-Snell-v${snell_proto_ver}-IPv4"
+            proxy_names+=("$pname_snell_v4")
             cat >> /opt/suoha_quick/clash.yaml <<EOF
-  - name: "${pname_snell}"
+  - name: "${pname_snell_v4}"
     type: snell
-    server: "${snell_host}"
+    server: ${server_ip}
     port: ${port_snell}
     psk: "${snell_psk}"
     version: ${snell_proto_ver}
     udp: true
 EOF
-            snell_display_line="${pname_snell} = snell, ${snell_host}, ${port_snell}, psk=${snell_psk}, version=${snell_proto_ver}, reuse=true"
-            echo "$snell_display_line" > /opt/suoha_quick/surge.conf
+            local surge_v4="${pname_snell_v4} = snell, ${server_ip}, ${port_snell}, psk=${snell_psk}, version=${snell_proto_ver}, reuse=true"
+            echo "$surge_v4" >> /opt/suoha_quick/surge.conf
+            snell_display_lines+="${surge_v4}\n"
+        fi
+
+        if [ -n "$server_ipv6" ]; then
+            local pname_snell_v6="${node_tag}-Snell-v${snell_proto_ver}-IPv6"
+            proxy_names+=("$pname_snell_v6")
+            cat >> /opt/suoha_quick/clash.yaml <<EOF
+  - name: "${pname_snell_v6}"
+    type: snell
+    server: "${server_ipv6}"
+    port: ${port_snell}
+    psk: "${snell_psk}"
+    version: ${snell_proto_ver}
+    udp: true
+EOF
+            local surge_v6="${pname_snell_v6} = snell, ${server_ipv6}, ${port_snell}, psk=${snell_psk}, version=${snell_proto_ver}, reuse=true"
+            echo "$surge_v6" >> /opt/suoha_quick/surge.conf
+            snell_display_lines+="${surge_v6}\n"
         fi
     fi
 
@@ -806,10 +871,10 @@ EOF
 [URI 通用节点链接 (VLESS-Argo / Trojan-Argo / Reality / AnyTLS / HY2 / TUIC)]
 $(cat /opt/suoha_quick/nodes.txt)
 
-[Snell-V6 专属配置 (Surge / Clash.Meta / Mihomo) | 状态: ${snell_status}]
-${snell_display_line:-未检测到可用公网 IP，跳过 Snell 生成}
-
+[Snell v${snell_proto_ver} 专属配置 (Mihomo Alpha v1.19.34+ / Surge) | 状态: ${snell_status}]
+$(echo -e "${snell_display_lines:-未检测到可用公网 IP，跳过 Snell 生成}")
 ======================== 端口与证书说明 ========================
+- Snell v6 客户端要求: 需使用合入了 PR #3410 的 Mihomo Alpha (v1.19.34+) 或最新 Surge
 - Argo 节点 443 端口可按需替换为 CF 其它 TLS 端口: 2053, 2083, 2087, 2096, 8443
 - AnyTLS / Hysteria2 / TUIC 均已自动签发 www.bing.com 证书 (客户端需开启跳过证书验证)
 - VLESS Reality 伪装域名: www.bing.com | PublicKey: ${reality_pub} | ShortID: ${reality_sid}
@@ -826,14 +891,14 @@ sub://${sub_online_url}
 3. Clash / Clash.Meta / Mihomo 一键导入配置:
 clash://install-config?url=${clash_online_url}
 
-4. Clash / Mihomo 在线 YAML 直链 (含全部 7 种协议含 Snell):
+4. Clash / Mihomo 在线 YAML 直链 (含全部协议含 Snell v6):
 ${clash_online_url}
 
 快捷卸载命令: bash $(readlink -f "$0" 2>/dev/null || echo "$0") uninstall
 =====================================================================
 EOF
 
-    show_progress 100 "全部 7 种协议部署完成！"
+    show_progress 100 "全部协议部署完成！"
     sleep 0.6
     clear
     cat /opt/suoha_quick/v2ray.txt
