@@ -102,6 +102,34 @@ function get_server_ipv6() {
     echo "$ip6"
 }
 
+# 检查端口是否空闲可用
+function is_port_free() {
+    local p="$1"
+    if ss -tulpn 2>/dev/null | grep -qE ":${p}\b"; then
+        return 1
+    fi
+    return 0
+}
+
+# 优先从常用已放行端口列表挑选空闲端口（443, 8443, 2053, 2083, 2087, 2096），都被占用再回退随机端口
+function pick_preferred_port() {
+    local candidates=("$@")
+    for p in "${candidates[@]}"; do
+        if is_port_free "$p"; then
+            echo "$p"
+            return
+        fi
+    done
+    while true; do
+        local rp=$((RANDOM%15000+20000))
+        if is_port_free "$rp"; then
+            echo "$rp"
+            return
+        fi
+    done
+}
+
+# 全方位放行本机防火墙 (ufw + firewalld + iptables + ip6tables)
 function open_firewall_port() {
     local port="$1"
     if command -v ufw >/dev/null 2>&1; then
@@ -116,6 +144,14 @@ function open_firewall_port() {
             firewall-cmd --zone=public --add-port="${port}/udp" >/dev/null 2>&1
         fi
     fi
+    if command -v iptables >/dev/null 2>&1; then
+        iptables -C INPUT -p tcp --dport "${port}" -j ACCEPT 2>/dev/null || iptables -I INPUT -p tcp --dport "${port}" -j ACCEPT >/dev/null 2>&1
+        iptables -C INPUT -p udp --dport "${port}" -j ACCEPT 2>/dev/null || iptables -I INPUT -p udp --dport "${port}" -j ACCEPT >/dev/null 2>&1
+    fi
+    if command -v ip6tables >/dev/null 2>&1; then
+        ip6tables -C INPUT -p tcp --dport "${port}" -j ACCEPT 2>/dev/null || ip6tables -I INPUT -p tcp --dport "${port}" -j ACCEPT >/dev/null 2>&1
+        ip6tables -C INPUT -p udp --dport "${port}" -j ACCEPT 2>/dev/null || ip6tables -I INPUT -p udp --dport "${port}" -j ACCEPT >/dev/null 2>&1
+    fi
 }
 
 function get_or_create_sub_port() {
@@ -125,9 +161,10 @@ function get_or_create_sub_port() {
         port=$(cat "$port_file" | tr -d '\n\r ')
     fi
     if [[ -z "$port" || ! "$port" =~ ^[0-9]+$ ]]; then
-        port=$((RANDOM%10000+25000))
+        port=$(pick_preferred_port 8880 2052 2082 2086 2095)
         echo "$port" > "$port_file"
     fi
+    open_firewall_port "$port"
     echo "$port"
 }
 
@@ -304,46 +341,34 @@ function quicktunnel_all_in_one() {
         exit 1
     fi
 
-    # 2. 提前探测服务器公网 IPv4 与 IPv6，决定监听绑定地址
+    # 2. 提前探测服务器公网 IPv4 与 IPv6
     show_progress 48 "正在探测服务器双栈公网 IP..."
     local server_ip
     server_ip=$(get_server_ip)
     local server_ipv6
     server_ipv6=$(get_server_ipv6)
 
-    # 如果机器有公网 IPv4，Xray 明确绑定 0.0.0.0 避免部分内核 net.ipv6.bindv6only=1 导致 IPv4 不通；纯 IPv6 机器则绑定 ::
-    local xray_listen="0.0.0.0"
-    if [ -z "$server_ip" ] && [ -n "$server_ipv6" ]; then
-        xray_listen="::"
-    fi
-
-    # 3. 生成自签名 www.bing.com 证书与兼容新旧 Xray 的 X25519 密钥对
-    show_progress 52 "正在自签 www.bing.com TLS 证书与 Reality X25519 密钥..."
+    # 3. 生成自签名 www.bing.com 证书与 X25519 密钥对 (使用 sing-box 生成标准 Base64Url X25519 密钥，100% 兼容 Xray 与 Mihomo)
+    show_progress 52 "正在自签 TLS 证书与生成标准 Reality X25519 密钥对..."
     openssl ecparam -genkey -name prime256v1 -out /opt/suoha_quick/cert/bing.key >/dev/null 2>&1
     openssl req -new -x509 -days 3650 -key /opt/suoha_quick/cert/bing.key \
         -out /opt/suoha_quick/cert/bing.crt \
         -subj "/C=US/ST=Washington/L=Redmond/O=Microsoft Corporation/CN=www.bing.com" \
         -addext "subjectAltName=DNS:www.bing.com,DNS:bing.com" >/dev/null 2>&1
 
-    # 精准提取 Xray x25519 的 PrivateKey 与 PublicKey (新版 Xray 输出为 PrivateKey / Password)
     local reality_keys
-    reality_keys=$(/opt/suoha_quick/xray x25519)
+    reality_keys=$(/opt/suoha_quick/sing-box generate reality-keypair)
     local reality_priv
-    reality_priv=$(echo "$reality_keys" | sed -n 's/.*Private[Kk]ey:[[:space:]]*\([^[:space:]]*\).*/\1/p' | head -n 1)
+    reality_priv=$(echo "$reality_keys" | awk '/PrivateKey:/ {print $2}' | head -n 1)
     local reality_pub
-    reality_pub=$(echo "$reality_keys" | sed -n 's/.*\(Public[Kk]ey\|Password\):[[:space:]]*\([^[:space:]]*\).*/\2/p' | head -n 1)
-
-    # 双重兜底：若 xray x25519 异常，使用 sing-box generate reality-keypair 生成标准 X25519 密钥
-    if [[ -z "$reality_priv" || -z "$reality_pub" ]]; then
-        reality_keys=$(/opt/suoha_quick/sing-box generate reality-keypair)
-        reality_priv=$(echo "$reality_keys" | awk '/PrivateKey:/ {print $2}' | head -n 1)
-        reality_pub=$(echo "$reality_keys" | awk '/PublicKey:/ {print $2}' | head -n 1)
-    fi
-
+    reality_pub=$(echo "$reality_keys" | awk '/PublicKey:/ {print $2}' | head -n 1)
     local reality_sid
     reality_sid=$(openssl rand -hex 8)
 
-    # 4. 分配随机端口与凭证
+    # 选用全球全机房 100% 支持 TLS 1.3 + H2 + X25519 的微软官方域名作为 Reality 伪装目标
+    local reality_sni="learn.microsoft.com"
+
+    # 4. 优先抢占常用已放行端口 (443, 8443, 2053, 2083, 2087, 2096) 避免云厂商安全组拦截
     local uuid
     uuid=$(cat /proc/sys/kernel/random/uuid)
     local short_id
@@ -360,14 +385,20 @@ function quicktunnel_all_in_one() {
 
     local port_argo_vl=$((RANDOM%10000+11000))
     local port_argo_tr=$((port_argo_vl+1))
-    local port_rel_vision=$((RANDOM%10000+21000))
-    local port_rel_xhttp=$((port_rel_vision+1))
-    local port_rel_grpc=$((port_rel_vision+2))
-    local port_anytls=$((port_rel_vision+3))
-    local port_hy2=$((port_rel_vision+4))
-    local port_tuic=$((port_rel_vision+5))
-    local port_snell=$((port_rel_vision+6))
-    local port_ss_v6=$((port_rel_vision+7))
+    local port_rel_vision
+    port_rel_vision=$(pick_preferred_port 443 8443 2053 2083 2087 2096)
+    local port_rel_xhttp
+    port_rel_xhttp=$(pick_preferred_port 8443 2053 2083 2087 2096)
+    local port_rel_grpc
+    port_rel_grpc=$(pick_preferred_port 2053 2083 2087 2096 8443)
+    local port_anytls
+    port_anytls=$(pick_preferred_port 2083 2087 2096 8443)
+    local port_hy2
+    port_hy2=$(pick_preferred_port 2087 2096 8443)
+    local port_tuic
+    port_tuic=$(pick_preferred_port 2096 8443)
+    local port_snell=$((RANDOM%10000+31000))
+    local port_ss_v6=$((port_snell+1))
 
     open_firewall_port "$port_rel_vision"
     open_firewall_port "$port_rel_xhttp"
@@ -378,17 +409,20 @@ function quicktunnel_all_in_one() {
     open_firewall_port "$port_snell"
     open_firewall_port "$port_ss_v6"
 
-    # 5. 生成 Xray 多入站 Reality 配置文件 (使用标准 tcp / xhttp / grpc 传输层)
+    # 5. 生成 Xray 多入站 Reality 配置文件 (同时监听 IPv4 与 IPv6 双栈)
     show_progress 58 "正在写入 Xray Reality (Vision + XHTTP + gRPC) 三件套配置..."
-    cat > /opt/suoha_quick/xray.json <<EOF
+    local xray_inbounds_json=""
+    if [ -n "$server_ip" ] && [ -n "$server_ipv6" ]; then
+        # 双栈机器同时显式绑定 0.0.0.0 与 ::，彻底免疫系统 net.ipv6.bindv6only=1 差异
+        cat > /opt/suoha_quick/xray.json <<EOF
 {
   "log": {
     "loglevel": "error"
   },
   "inbounds": [
     {
-      "tag": "reality-vision-in",
-      "listen": "${xray_listen}",
+      "tag": "reality-vision-v4",
+      "listen": "0.0.0.0",
       "port": ${port_rel_vision},
       "protocol": "vless",
       "settings": {
@@ -405,10 +439,10 @@ function quicktunnel_all_in_one() {
         "security": "reality",
         "realitySettings": {
           "show": false,
-          "dest": "www.bing.com:443",
+          "dest": "${reality_sni}:443",
           "xver": 0,
           "serverNames": [
-            "www.bing.com"
+            "${reality_sni}"
           ],
           "privateKey": "${reality_priv}",
           "shortIds": [
@@ -426,8 +460,47 @@ function quicktunnel_all_in_one() {
       }
     },
     {
-      "tag": "reality-xhttp-in",
-      "listen": "${xray_listen}",
+      "tag": "reality-vision-v6",
+      "listen": "::",
+      "port": ${port_rel_vision},
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "id": "${uuid}",
+            "flow": "xtls-rprx-vision"
+          }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "reality",
+        "realitySettings": {
+          "show": false,
+          "dest": "${reality_sni}:443",
+          "xver": 0,
+          "serverNames": [
+            "${reality_sni}"
+          ],
+          "privateKey": "${reality_priv}",
+          "shortIds": [
+            "${reality_sid}"
+          ]
+        }
+      },
+      "sniffing": {
+        "enabled": true,
+        "destOverride": [
+          "http",
+          "tls",
+          "quic"
+        ]
+      }
+    },
+    {
+      "tag": "reality-xhttp-v4",
+      "listen": "0.0.0.0",
       "port": ${port_rel_xhttp},
       "protocol": "vless",
       "settings": {
@@ -447,10 +520,10 @@ function quicktunnel_all_in_one() {
         "security": "reality",
         "realitySettings": {
           "show": false,
-          "dest": "www.bing.com:443",
+          "dest": "${reality_sni}:443",
           "xver": 0,
           "serverNames": [
-            "www.bing.com"
+            "${reality_sni}"
           ],
           "privateKey": "${reality_priv}",
           "shortIds": [
@@ -468,8 +541,50 @@ function quicktunnel_all_in_one() {
       }
     },
     {
-      "tag": "reality-grpc-in",
-      "listen": "${xray_listen}",
+      "tag": "reality-xhttp-v6",
+      "listen": "::",
+      "port": ${port_rel_xhttp},
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "id": "${uuid}"
+          }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "xhttp",
+        "xhttpSettings": {
+          "path": "${xhttp_path}",
+          "mode": "auto"
+        },
+        "security": "reality",
+        "realitySettings": {
+          "show": false,
+          "dest": "${reality_sni}:443",
+          "xver": 0,
+          "serverNames": [
+            "${reality_sni}"
+          ],
+          "privateKey": "${reality_priv}",
+          "shortIds": [
+            "${reality_sid}"
+          ]
+        }
+      },
+      "sniffing": {
+        "enabled": true,
+        "destOverride": [
+          "http",
+          "tls",
+          "quic"
+        ]
+      }
+    },
+    {
+      "tag": "reality-grpc-v4",
+      "listen": "0.0.0.0",
       "port": ${port_rel_grpc},
       "protocol": "vless",
       "settings": {
@@ -488,10 +603,51 @@ function quicktunnel_all_in_one() {
         "security": "reality",
         "realitySettings": {
           "show": false,
-          "dest": "www.bing.com:443",
+          "dest": "${reality_sni}:443",
           "xver": 0,
           "serverNames": [
-            "www.bing.com"
+            "${reality_sni}"
+          ],
+          "privateKey": "${reality_priv}",
+          "shortIds": [
+            "${reality_sid}"
+          ]
+        }
+      },
+      "sniffing": {
+        "enabled": true,
+        "destOverride": [
+          "http",
+          "tls",
+          "quic"
+        ]
+      }
+    },
+    {
+      "tag": "reality-grpc-v6",
+      "listen": "::",
+      "port": ${port_rel_grpc},
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "id": "${uuid}"
+          }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "grpc",
+        "grpcSettings": {
+          "serviceName": "${grpc_service}"
+        },
+        "security": "reality",
+        "realitySettings": {
+          "show": false,
+          "dest": "${reality_sni}:443",
+          "xver": 0,
+          "serverNames": [
+            "${reality_sni}"
           ],
           "privateKey": "${reality_priv}",
           "shortIds": [
@@ -517,6 +673,147 @@ function quicktunnel_all_in_one() {
   ]
 }
 EOF
+    else
+        local single_listen="0.0.0.0"
+        [ -z "$server_ip" ] && single_listen="::"
+        cat > /opt/suoha_quick/xray.json <<EOF
+{
+  "log": {
+    "loglevel": "error"
+  },
+  "inbounds": [
+    {
+      "tag": "reality-vision-in",
+      "listen": "${single_listen}",
+      "port": ${port_rel_vision},
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "id": "${uuid}",
+            "flow": "xtls-rprx-vision"
+          }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "reality",
+        "realitySettings": {
+          "show": false,
+          "dest": "${reality_sni}:443",
+          "xver": 0,
+          "serverNames": [
+            "${reality_sni}"
+          ],
+          "privateKey": "${reality_priv}",
+          "shortIds": [
+            "${reality_sid}"
+          ]
+        }
+      },
+      "sniffing": {
+        "enabled": true,
+        "destOverride": [
+          "http",
+          "tls",
+          "quic"
+        ]
+      }
+    },
+    {
+      "tag": "reality-xhttp-in",
+      "listen": "${single_listen}",
+      "port": ${port_rel_xhttp},
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "id": "${uuid}"
+          }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "xhttp",
+        "xhttpSettings": {
+          "path": "${xhttp_path}",
+          "mode": "auto"
+        },
+        "security": "reality",
+        "realitySettings": {
+          "show": false,
+          "dest": "${reality_sni}:443",
+          "xver": 0,
+          "serverNames": [
+            "${reality_sni}"
+          ],
+          "privateKey": "${reality_priv}",
+          "shortIds": [
+            "${reality_sid}"
+          ]
+        }
+      },
+      "sniffing": {
+        "enabled": true,
+        "destOverride": [
+          "http",
+          "tls",
+          "quic"
+        ]
+      }
+    },
+    {
+      "tag": "reality-grpc-in",
+      "listen": "${single_listen}",
+      "port": ${port_rel_grpc},
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "id": "${uuid}"
+          }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "grpc",
+        "grpcSettings": {
+          "serviceName": "${grpc_service}"
+        },
+        "security": "reality",
+        "realitySettings": {
+          "show": false,
+          "dest": "${reality_sni}:443",
+          "xver": 0,
+          "serverNames": [
+            "${reality_sni}"
+          ],
+          "privateKey": "${reality_priv}",
+          "shortIds": [
+            "${reality_sid}"
+          ]
+        }
+      },
+      "sniffing": {
+        "enabled": true,
+        "destOverride": [
+          "http",
+          "tls",
+          "quic"
+        ]
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    }
+  ]
+}
+EOF
+    fi
 
     # 6. 生成 Sing-box 配置文件 (负责 Argo WS + AnyTLS + Hysteria2 + TUIC v5 + SS-IPv6)
     show_progress 62 "正在写入 Sing-box (Argo + AnyTLS + HY2 + TUIC + SS-IPv6) 配置文件..."
@@ -653,10 +950,14 @@ EOF
     local sb_pid=$!
     echo $sb_pid > /opt/suoha_quick/singbox.pid
 
-    sleep 0.8
-    local xray_status="运行正常 (PID:${xray_pid})"
-    if ! kill -0 "$xray_pid" 2>/dev/null; then
-        xray_status="异常: $(cat /opt/suoha_quick/xray.log 2>/dev/null | tr '\n' ' ')"
+    sleep 1
+    local xray_status=""
+    if kill -0 "$xray_pid" 2>/dev/null; then
+        local listening_ports
+        listening_ports=$(ss -tulpn 2>/dev/null | grep "pid=${xray_pid}" | awk '{print $5}' | tr '\n' ' ')
+        xray_status="运行正常 (PID:${xray_pid} | 监听:${listening_ports:-已就绪})"
+    else
+        xray_status="启动失败! 错误日志: $(cat /opt/suoha_quick/xray.log 2>/dev/null | tr '\n' ' ')"
     fi
 
     local snell_psk
@@ -786,10 +1087,10 @@ EOF
 
         # 方案一（主力首选）：VLESS + TCP + REALITY + Vision
         local pname_rel_vision="${node_tag}-Reality-Vision-主力"
-        local uri_rel_vision="vless://${uuid}@${direct_host}:${port_rel_vision}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.bing.com&fp=chrome&pbk=${reality_pub}&sid=${reality_sid}&type=tcp&headerType=none#${pname_rel_vision}"
+        local uri_rel_vision="vless://${uuid}@${direct_host}:${port_rel_vision}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${reality_sni}&fp=chrome&pbk=${reality_pub}&sid=${reality_sid}&type=tcp&headerType=none#${pname_rel_vision}"
         echo "$uri_rel_vision" >> /opt/suoha_quick/nodes.txt
         proxy_names+=("$pname_rel_vision")
-        reality_summary+="[1. 主力首选 - TCP+Vision]\n${uri_rel_vision}\n\n"
+        reality_summary+="[1. 主力首选 - TCP+Vision (端口:${port_rel_vision})]\n${uri_rel_vision}\n\n"
         cat >> /opt/suoha_quick/clash.yaml <<EOF
   - name: "${pname_rel_vision}"
     type: vless
@@ -800,7 +1101,7 @@ EOF
     tls: true
     udp: true
     flow: xtls-rprx-vision
-    servername: www.bing.com
+    servername: ${reality_sni}
     reality-opts:
       public-key: ${reality_pub}
       short-id: ${reality_sid}
@@ -809,10 +1110,10 @@ EOF
 
         # 方案二（现代备用）：VLESS + XHTTP + REALITY
         local pname_rel_xhttp="${node_tag}-Reality-XHTTP-备用"
-        local uri_rel_xhttp="vless://${uuid}@${direct_host}:${port_rel_xhttp}?encryption=none&security=reality&sni=www.bing.com&fp=chrome&pbk=${reality_pub}&sid=${reality_sid}&type=xhttp&path=${encoded_xhttp_path}&mode=auto#${pname_rel_xhttp}"
+        local uri_rel_xhttp="vless://${uuid}@${direct_host}:${port_rel_xhttp}?encryption=none&security=reality&sni=${reality_sni}&fp=chrome&pbk=${reality_pub}&sid=${reality_sid}&type=xhttp&path=${encoded_xhttp_path}&mode=auto#${pname_rel_xhttp}"
         echo "$uri_rel_xhttp" >> /opt/suoha_quick/nodes.txt
         proxy_names+=("$pname_rel_xhttp")
-        reality_summary+="[2. 现代备用 - XHTTP抗QoS]\n${uri_rel_xhttp}\n\n"
+        reality_summary+="[2. 现代备用 - XHTTP抗QoS (端口:${port_rel_xhttp})]\n${uri_rel_xhttp}\n\n"
         cat >> /opt/suoha_quick/clash.yaml <<EOF
   - name: "${pname_rel_xhttp}"
     type: vless
@@ -822,7 +1123,7 @@ EOF
     network: xhttp
     tls: true
     udp: true
-    servername: www.bing.com
+    servername: ${reality_sni}
     xhttp-opts:
       path: ${xhttp_path}
       mode: auto
@@ -834,10 +1135,10 @@ EOF
 
         # 方案三（老旧兼容/中转兜底）：VLESS + gRPC + REALITY
         local pname_rel_grpc="${node_tag}-Reality-gRPC-兼容"
-        local uri_rel_grpc="vless://${uuid}@${direct_host}:${port_rel_grpc}?encryption=none&security=reality&sni=www.bing.com&fp=chrome&pbk=${reality_pub}&sid=${reality_sid}&type=grpc&serviceName=${grpc_service}&mode=gun#${pname_rel_grpc}"
+        local uri_rel_grpc="vless://${uuid}@${direct_host}:${port_rel_grpc}?encryption=none&security=reality&sni=${reality_sni}&fp=chrome&pbk=${reality_pub}&sid=${reality_sid}&type=grpc&serviceName=${grpc_service}&mode=gun#${pname_rel_grpc}"
         echo "$uri_rel_grpc" >> /opt/suoha_quick/nodes.txt
         proxy_names+=("$pname_rel_grpc")
-        reality_summary+="[3. 兼容兜底 - gRPC中转]\n${uri_rel_grpc}\n"
+        reality_summary+="[3. 兼容兜底 - gRPC中转 (端口:${port_rel_grpc})]\n${uri_rel_grpc}\n"
         cat >> /opt/suoha_quick/clash.yaml <<EOF
   - name: "${pname_rel_grpc}"
     type: vless
@@ -847,7 +1148,7 @@ EOF
     network: grpc
     tls: true
     udp: true
-    servername: www.bing.com
+    servername: ${reality_sni}
     grpc-opts:
       grpc-service-name: ${grpc_service}
     reality-opts:
@@ -1070,7 +1371,8 @@ EOF
     cat > /opt/suoha_quick/v2ray.txt <<EOF
 ======================== VLESS + REALITY 三件套组合 ========================
 Xray 状态: ${xray_status}
-共用参数 -> UUID: ${uuid} | SNI: www.bing.com | PublicKey: ${reality_pub} | ShortID: ${reality_sid}
+共用参数 -> UUID: ${uuid} | SNI: ${reality_sni} | PublicKey: ${reality_pub} | ShortID: ${reality_sid}
+已分配端口 -> Vision:${port_rel_vision} | XHTTP:${port_rel_xhttp} | gRPC:${port_rel_grpc} (如云厂商有外部安全组请在控制台放行)
 
 $(echo -e "${reality_summary:-未检测到可用公网 IP，跳过 Reality 直连生成}")
 ======================== Shadowsocks IPv6 直连节点 ========================
