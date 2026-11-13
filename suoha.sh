@@ -13,24 +13,23 @@ YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m'
 
-# 实时终端进度条渲染函数: show_progress <百分比 0-100> <当前任务描述>
+# 纯 ASCII 零乱码动态进度条渲染函数: show_progress <百分比 0-100> <当前任务描述>
 function show_progress() {
     local pct=$1
     local msg="$2"
-    local width=36
+    local width=32
     local filled=$((pct * width / 100))
     local empty=$((width - filled))
     local bar_filled=""
     local bar_empty=""
 
     if [ $filled -gt 0 ]; then
-        bar_filled=$(printf "%${filled}s" | tr ' ' '█')
+        bar_filled=$(printf "%${filled}s" | tr ' ' '=')
     fi
     if [ $empty -gt 0 ]; then
-        bar_empty=$(printf "%${empty}s" | tr ' ' '░')
+        bar_empty=$(printf "%${empty}s" | tr ' ' '.')
     fi
 
-    # 清除当前行并原地刷新进度条
     printf "\r\033[K${CYAN}[${GREEN}${bar_filled}${NC}${bar_empty}${CYAN}] ${YELLOW}%3d%%${NC} - %s" "$pct" "$msg"
 }
 
@@ -120,11 +119,24 @@ function get_or_create_sub_port() {
     echo "$port"
 }
 
+# 安全按 PID 文件终止进程，绝不误杀当前脚本自身
+function safe_kill_pidfile() {
+    local pid_file="$1"
+    if [ -f "$pid_file" ]; then
+        local target_pid
+        target_pid=$(tr -d ' \n\r' < "$pid_file")
+        if [[ "$target_pid" =~ ^[0-9]+$ ]] && [ "$target_pid" != "$$" ] && [ "$target_pid" != "$PPID" ]; then
+            kill -9 "$target_pid" >/dev/null 2>&1
+        fi
+        rm -f "$pid_file"
+    fi
+}
+
 function start_sub_server() {
     local web_dir="$1"
     local port="$2"
 
-    pkill -f "http.server $port" >/dev/null 2>&1
+    safe_kill_pidfile "/opt/suoha_quick/sub_http.pid"
     if command -v fuser >/dev/null 2>&1; then
         fuser -k "${port}/tcp" >/dev/null 2>&1
     fi
@@ -146,15 +158,24 @@ function sync_to_static_web() {
 }
 
 function stop_all_services() {
-    for pid_file in /opt/suoha_quick/singbox.pid /opt/suoha_quick/cf_vl.pid /opt/suoha_quick/cf_tr.pid /opt/suoha_quick/snell.pid /opt/suoha_quick/sub_http.pid; do
-        if [ -f "$pid_file" ]; then
-            kill -9 "$(cat "$pid_file")" >/dev/null 2>&1
-            rm -f "$pid_file"
-        fi
-    done
-    pkill -f "/opt/suoha_quick/sing-box" >/dev/null 2>&1
-    pkill -f "/opt/suoha_quick/cloudflared-linux" >/dev/null 2>&1
-    pkill -f "/opt/suoha_quick/snell-server" >/dev/null 2>&1
+    safe_kill_pidfile "/opt/suoha_quick/singbox.pid"
+    safe_kill_pidfile "/opt/suoha_quick/cf_vl.pid"
+    safe_kill_pidfile "/opt/suoha_quick/cf_tr.pid"
+    safe_kill_pidfile "/opt/suoha_quick/snell.pid"
+    safe_kill_pidfile "/opt/suoha_quick/sub_http.pid"
+
+    # 仅按精确可执行文件名匹配，避免 pkill -f 误杀正在运行的 shell 脚本
+    if command -v killall >/dev/null 2>&1; then
+        killall -9 sing-box cloudflared-linux snell-server >/dev/null 2>&1
+    else
+        for bin_name in sing-box cloudflared-linux snell-server; do
+            for pid in $(pidof "$bin_name" 2>/dev/null); do
+                if [ "$pid" != "$$" ] && [ "$pid" != "$PPID" ]; then
+                    kill -9 "$pid" >/dev/null 2>&1
+                fi
+            done
+        done
+    fi
 }
 
 function uninstall_all() {
@@ -162,7 +183,13 @@ function uninstall_all() {
     stop_all_services
     sleep 0.5
     show_progress 60 "正在清理 HTTP 订阅守护进程..."
-    pkill -f "http.server" >/dev/null 2>&1
+    if [ -f "/etc/suoha_sub_port" ]; then
+        local old_port
+        old_port=$(tr -d ' \n\r' < /etc/suoha_sub_port)
+        if [[ "$old_port" =~ ^[0-9]+$ ]] && command -v fuser >/dev/null 2>&1; then
+            fuser -k "${old_port}/tcp" >/dev/null 2>&1
+        fi
+    fi
     sleep 0.5
     show_progress 90 "正在删除配置文件与证书目录..."
     rm -rf /opt/suoha /opt/suoha_quick /etc/suoha_sub_port /var/www/suoha_sub /usr/bin/suoha
@@ -496,7 +523,6 @@ EOF
             break
         fi
 
-        # 动态计算 75% - 91% 之间的实时等待进度
         local dynamic_pct=$((74 + wait_sec))
         if [ $dynamic_pct -gt 91 ]; then
             dynamic_pct=91
@@ -509,8 +535,8 @@ EOF
 
         if [ $wait_sec -ge 25 ]; then
             wait_sec=0
-            [ -f "/opt/suoha_quick/cf_vl.pid" ] && kill -9 "$(cat /opt/suoha_quick/cf_vl.pid)" >/dev/null 2>&1
-            [ -f "/opt/suoha_quick/cf_tr.pid" ] && kill -9 "$(cat /opt/suoha_quick/cf_tr.pid)" >/dev/null 2>&1
+            safe_kill_pidfile "/opt/suoha_quick/cf_vl.pid"
+            safe_kill_pidfile "/opt/suoha_quick/cf_tr.pid"
             rm -f /opt/suoha_quick/argo_vless.log /opt/suoha_quick/argo_trojan.log
             show_progress 75 "Argo 获取超时，正在自动重连建立双隧道..."
             /opt/suoha_quick/cloudflared-linux tunnel --url "http://127.0.0.1:${port_argo_vl}" --no-autoupdate --edge-ip-version "$ips" --protocol http2 > /opt/suoha_quick/argo_vless.log 2>&1 &
