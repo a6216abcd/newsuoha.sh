@@ -1,281 +1,480 @@
 #!/bin/bash
-# onekey suoha
+# onekey suoha - Full Protocol Edition (Argo VLESS/Trojan + Reality + AnyTLS + HY2 + TUIC + Snell-v6)
+
+export PATH=$PATH:/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin
+
+# 支持命令行参数快速卸载: bash suoha.sh uninstall
+ACTION="${1:-install}"
+
 linux_os=("Debian" "Ubuntu" "CentOS" "Fedora" "Alpine")
 linux_update=("apt update" "apt update" "yum -y update" "yum -y update" "apk update")
 linux_install=("apt -y install" "apt -y install" "yum -y install" "yum -y install" "apk add -f")
 n=0
-for i in `echo ${linux_os[@]}`
-do
-    if [ $i == $(grep -i PRETTY_NAME /etc/os-release | cut -d \" -f2 | awk '{print $1}') ]
-    then
+OS_NAME=$(grep -i PRETTY_NAME /etc/os-release 2>/dev/null | cut -d \" -f2 | awk '{print $1}')
+
+for i in "${linux_os[@]}"; do
+    if [ "$i" == "$OS_NAME" ]; then
         break
     else
-        n=$[$n+1]
+        n=$((n+1))
     fi
 done
-if [ $n == 5 ]
-then
-    echo "当前系统$(grep -i PRETTY_NAME /etc/os-release | cut -d \" -f2)没有适配"
-    echo "默认使用APT包管理器"
+
+if [ $n -eq 5 ]; then
+    echo "当前系统 ${OS_NAME:-Unknown} 未在预设列表，默认使用 APT 包管理器"
     n=0
 fi
-if [ -z $(type -P unzip) ]
-then
-    ${linux_update[$n]}
-    ${linux_install[$n]} unzip
-fi
-if [ -z $(type -P curl) ]
-then
-    ${linux_update[$n]}
-    ${linux_install[$n]} curl
-fi
-if [ -z $(type -P python3) ]
-then
-    ${linux_update[$n]}
-    ${linux_install[$n]} python3
-fi
-if [ $(grep -i PRETTY_NAME /etc/os-release | cut -d \" -f2 | awk '{print $1}') != "Alpine" ]
-then
-    if [ -z $(type -P systemctl) ]
-    then
-        ${linux_update[$n]}
-        ${linux_install[$n]} systemctl
-    fi
-fi
 
-function get_server_ip(){
+# 检查并安装基础依赖
+install_deps() {
+    local deps=("unzip" "curl" "python3" "openssl" "tar" "jq")
+    local need_update=0
+    for dep in "${deps[@]}"; do
+        if [ -z "$(type -P "$dep")" ]; then
+            need_update=1
+            break
+        fi
+    done
+
+    if [ $need_update -eq 1 ]; then
+        ${linux_update[$n]} >/dev/null 2>&1
+        for dep in "${deps[@]}"; do
+            if [ -z "$(type -P "$dep")" ]; then
+                ${linux_install[$n]} "$dep" >/dev/null 2>&1
+            fi
+        done
+    fi
+}
+
+function get_server_ip() {
     local ip=""
     ip=$(ip route get 1.1.1.1 2>/dev/null | awk '{print $7; exit}')
     if [[ -z "$ip" || "$ip" =~ ^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.) ]]; then
-        ip=$(curl -s4 --connect-timeout 2 https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null | awk -F= '/ip/{print $2}')
+        ip=$(curl -s4 --connect-timeout 3 https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null | awk -F= '/ip/{print $2}')
     fi
     if [ -z "$ip" ]; then
-        ip=$(curl -s4 --connect-timeout 2 https://ipv4.icanhazip.com 2>/dev/null | tr -d '\n\r ')
+        ip=$(curl -s4 --connect-timeout 3 https://ipv4.icanhazip.com 2>/dev/null | tr -d '\n\r ')
     fi
     if [ -z "$ip" ]; then
-        ip=$(curl -s4 --connect-timeout 2 https://api.ip.sb/ip 2>/dev/null | tr -d '\n\r ')
-    fi
-    if [ -z "$ip" ]; then
-        ip=$(curl -s6 --connect-timeout 2 https://api64.ipify.org 2>/dev/null | tr -d '\n\r ')
+        ip=$(curl -s4 --connect-timeout 3 https://api.ip.sb/ip 2>/dev/null | tr -d '\n\r ')
     fi
     echo "$ip"
 }
 
-function get_server_ipv6(){
+function get_server_ipv6() {
     local ip6=""
     ip6=$(curl -s6 --connect-timeout 3 https://api64.ipify.org 2>/dev/null | tr -d '\n\r ')
     if [ -z "$ip6" ]; then
         ip6=$(curl -s6 --connect-timeout 3 https://ipv6.icanhazip.com 2>/dev/null | tr -d '\n\r ')
     fi
     if [ -z "$ip6" ]; then
-        ip6=$(curl -s6 --connect-timeout 3 https://speed.cloudflare.com/meta 2>/dev/null | awk -F\" '{print $26}' | grep ":" | tr -d '\n\r ')
-    fi
-    if [ -z "$ip6" ]; then
-        ip6=$(ip -6 addr show scope global | grep inet6 | awk '{print $2}' | cut -d/ -f1 | head -n 1 | tr -d '\n\r ')
+        ip6=$(ip -6 addr show scope global 2>/dev/null | grep inet6 | awk '{print $2}' | cut -d/ -f1 | head -n 1 | tr -d '\n\r ')
     fi
     echo "$ip6"
 }
 
-function get_or_create_sub_port(){
+function get_or_create_sub_port() {
     local port_file="/etc/suoha_sub_port"
     local port=""
     if [ -f "$port_file" ]; then
         port=$(cat "$port_file" | tr -d '\n\r ')
     fi
     if [[ -z "$port" || ! "$port" =~ ^[0-9]+$ ]]; then
-        port=$[$RANDOM%10000+25000]
+        port=$((RANDOM%10000+25000))
         echo "$port" > "$port_file"
     fi
     echo "$port"
 }
 
-function start_sub_server(){
+function start_sub_server() {
     local web_dir="$1"
     local port="$2"
 
     pkill -f "http.server $port" >/dev/null 2>&1
-    fuser -k ${port}/tcp >/dev/null 2>&1
+    if command -v fuser >/dev/null 2>&1; then
+        fuser -k "${port}/tcp" >/dev/null 2>&1
+    fi
 
     if [ -x "$(command -v python3)" ]; then
-        nohup python3 -m http.server $port --directory "$web_dir" >/dev/null 2>&1 &
-    elif [ -x "$(command -v python)" ]; then
-        cd "$web_dir" && nohup python -m SimpleHTTPServer $port >/dev/null 2>&1 &
-        cd - >/dev/null 2>&1
+        nohup python3 -m http.server "$port" --bind :: --directory "$web_dir" >/dev/null 2>&1 &
+        echo $! > /opt/suoha_quick/sub_http.pid
     fi
 }
 
-function sync_to_static_web(){
+function sync_to_static_web() {
     local src_dir="$1"
     local static_dir="/var/www/suoha_sub"
     mkdir -p "$static_dir" >/dev/null 2>&1
     [ -f "${src_dir}/nodes.txt" ] && cp -f "${src_dir}/nodes.txt" "${static_dir}/nodes.txt" 2>/dev/null
     [ -f "${src_dir}/sub.txt" ] && cp -f "${src_dir}/sub.txt" "${static_dir}/sub.txt" 2>/dev/null
     [ -f "${src_dir}/clash.yaml" ] && cp -f "${src_dir}/clash.yaml" "${static_dir}/clash.yaml" 2>/dev/null
+    [ -f "${src_dir}/surge.conf" ] && cp -f "${src_dir}/surge.conf" "${static_dir}/surge.conf" 2>/dev/null
 }
 
-function quicktunnel(){
-mkdir -p /opt/suoha_quick >/dev/null 2>&1
-cd /opt/suoha_quick
+function stop_all_services() {
+    for pid_file in /opt/suoha_quick/singbox.pid /opt/suoha_quick/cf_vl.pid /opt/suoha_quick/cf_tr.pid /opt/suoha_quick/snell.pid /opt/suoha_quick/sub_http.pid; do
+        if [ -f "$pid_file" ]; then
+            kill -9 "$(cat "$pid_file")" >/dev/null 2>&1
+            rm -f "$pid_file"
+        fi
+    done
+    pkill -f "/opt/suoha_quick/sing-box" >/dev/null 2>&1
+    pkill -f "/opt/suoha_quick/cloudflared-linux" >/dev/null 2>&1
+    pkill -f "/opt/suoha_quick/snell-server" >/dev/null 2>&1
+}
 
-# 精确清理旧的后台快速模式进程，严禁使用盲目匹配
-if [ -f "/opt/suoha_quick/xray.pid" ]; then
-    kill -9 $(cat /opt/suoha_quick/xray.pid) >/dev/null 2>&1
-    rm -f /opt/suoha_quick/xray.pid
+function uninstall_all() {
+    stop_all_services
+    pkill -f "http.server" >/dev/null 2>&1
+    rm -rf /opt/suoha /opt/suoha_quick /etc/suoha_sub_port /var/www/suoha_sub /usr/bin/suoha
+    echo "所有梭哈全协议服务及订阅文件已彻底清理完成。"
+    exit 0
+}
+
+if [ "$ACTION" == "uninstall" ]; then
+    uninstall_all
 fi
-if [ -f "/opt/suoha_quick/cf_vl.pid" ]; then
-    kill -9 $(cat /opt/suoha_quick/cf_vl.pid) >/dev/null 2>&1
-    rm -f /opt/suoha_quick/cf_vl.pid
-fi
-if [ -f "/opt/suoha_quick/cf_tr.pid" ]; then
-    kill -9 $(cat /opt/suoha_quick/cf_tr.pid) >/dev/null 2>&1
-    rm -f /opt/suoha_quick/cf_tr.pid
-fi
 
-rm -rf xray cloudflared-linux xray.zip
+function quicktunnel_all_in_one() {
+    clear
+    echo "=================================================================="
+    echo "   一键全协议梭哈部署启动中 (Argo + Reality + AnyTLS + HY2 + TUIC + Snell-v6)"
+    echo "=================================================================="
+    
+    install_deps
+    stop_all_services
 
-case "$(uname -m)" in
-    x86_64 | x64 | amd64 )
-    curl -L https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip -o xray.zip
-    curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared-linux
-    ;;
-    i386 | i686 )
-    curl -L https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-32.zip -o xray.zip
-    curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-386 -o cloudflared-linux
-    ;;
-    armv8 | arm64 | aarch64 )
-    echo arm64
-    curl -L https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-arm64-v8a.zip -o xray.zip
-    curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64 -o cloudflared-linux
-    ;;
-    armv7l )
-    curl -L https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-arm32-v7a.zip -o xray.zip
-    curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm -o cloudflared-linux
-    ;;
-    * )
-    echo "当前架构$(uname -m)没有适配"
-    exit
-    ;;
-esac
-mkdir xray
-unzip -d xray xray.zip
-chmod +x cloudflared-linux xray/xray
-rm -rf xray.zip
+    mkdir -p /opt/suoha_quick/cert >/dev/null 2>&1
+    cd /opt/suoha_quick || exit 1
+    rm -rf sing-box cloudflared-linux snell-server sb.tar.gz snell.zip
 
-uuid=$(cat /proc/sys/kernel/random/uuid)
-urlpath_vless="vl-$(echo $uuid | awk -F- '{print $1}')"
-urlpath_trojan="tr-$(echo $uuid | awk -F- '{print $1}')"
+    # 1. 架构识别与核心二进制下载 (Sing-box 最新版 + Cloudflared + Snell)
+    local arch_sb=""
+    local arch_cf=""
+    local arch_snell=""
 
-port_vless=$[$RANDOM+10000]
-port_trojan=$[$port_vless+1]
+    case "$(uname -m)" in
+        x86_64 | x64 | amd64 )
+            arch_sb="linux-amd64"
+            arch_cf="linux-amd64"
+            arch_snell="linux-amd64"
+            ;;
+        i386 | i686 )
+            arch_sb="linux-386"
+            arch_cf="linux-386"
+            arch_snell="linux-i386"
+            ;;
+        armv8 | arm64 | aarch64 )
+            arch_sb="linux-arm64"
+            arch_cf="linux-arm64"
+            arch_snell="linux-aarch64"
+            ;;
+        armv7l )
+            arch_sb="linux-armv7"
+            arch_cf="linux-arm"
+            arch_snell="linux-armv7l"
+            ;;
+        * )
+            echo "当前架构 $(uname -m) 暂不支持！"
+            exit 1
+            ;;
+    esac
 
-cat>xray/config.json<<EOF
+    echo "[1/5] 正在拉取最新 Sing-box 核心、Cloudflared 与 Snell-server..."
+    local sb_version
+    sb_version=$(curl -s https://api.github.com/repos/SagerNet/sing-box/releases/latest | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
+    if [ -z "$sb_version" ]; then
+        sb_version="1.12.12"
+    fi
+
+    curl -sL "https://github.com/SagerNet/sing-box/releases/download/v${sb_version}/sing-box-${sb_version}-${arch_sb}.tar.gz" -o sb.tar.gz
+    tar -xzf sb.tar.gz
+    mv "sing-box-${sb_version}-${arch_sb}/sing-box" /opt/suoha_quick/sing-box
+    rm -rf "sing-box-${sb_version}-${arch_sb}" sb.tar.gz
+
+    curl -sL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-${arch_cf}" -o /opt/suoha_quick/cloudflared-linux
+
+    # 下载 Snell v5 (兼容 v4/v5/v6 双栈模式)
+    curl -sL "https://dl.nssurge.com/snell/snell-server-v5.0.0-${arch_snell}.zip" -o snell.zip
+    if [ -s snell.zip ] && unzip -t snell.zip >/dev/null 2>&1; then
+        unzip -oq snell.zip -d /opt/suoha_quick/
+    else
+        curl -sL "https://dl.nssurge.com/snell/snell-server-v4.1.1-${arch_snell}.zip" -o snell.zip
+        unzip -oq snell.zip -d /opt/suoha_quick/ 2>/dev/null
+    fi
+    rm -f snell.zip
+
+    chmod +x /opt/suoha_quick/sing-box /opt/suoha_quick/cloudflared-linux
+    [ -f /opt/suoha_quick/snell-server ] && chmod +x /opt/suoha_quick/snell-server
+
+    if [ ! -x /opt/suoha_quick/sing-box ] || [ ! -x /opt/suoha_quick/cloudflared-linux ]; then
+        echo "核心文件下载失败，请检查服务器网络连接（GitHub 访问是否正常）！"
+        exit 1
+    fi
+
+    # 2. 生成自签名 www.bing.com 证书 (供 AnyTLS, Hysteria2, TUIC 使用)
+    echo "[2/5] 正在生成自签名 www.bing.com TLS 证书与 Reality 密钥对..."
+    openssl ecparam -genkey -name prime256v1 -out /opt/suoha_quick/cert/bing.key >/dev/null 2>&1
+    openssl req -new -x509 -days 3650 -key /opt/suoha_quick/cert/bing.key \
+        -out /opt/suoha_quick/cert/bing.crt \
+        -subj "/C=US/ST=Washington/L=Redmond/O=Microsoft Corporation/CN=www.bing.com" \
+        -addext "subjectAltName=DNS:www.bing.com,DNS:bing.com" >/dev/null 2>&1
+
+    # 生成 Reality X25519 密钥对与 ShortID
+    local reality_keys
+    reality_keys=$(/opt/suoha_quick/sing-box generate reality-keypair)
+    local reality_priv
+    reality_priv=$(echo "$reality_keys" | awk '/PrivateKey:/ {print $2}')
+    local reality_pub
+    reality_pub=$(echo "$reality_keys" | awk '/PublicKey:/ {print $2}')
+    local reality_sid
+    reality_sid=$(openssl rand -hex 8)
+
+    # 3. 分配随机端口与凭证
+    local uuid
+    uuid=$(cat /proc/sys/kernel/random/uuid)
+    local short_id
+    short_id=$(echo "$uuid" | awk -F- '{print $1}')
+    local urlpath_vless="vl-${short_id}"
+    local urlpath_trojan="tr-${short_id}"
+    local password_all
+    password_all=$(openssl rand -hex 12)
+
+    local port_argo_vl=$((RANDOM%10000+11000))
+    local port_argo_tr=$((port_argo_vl+1))
+    local port_reality=$((RANDOM%10000+21000))
+    local port_anytls=$((port_reality+1))
+    local port_hy2=$((port_reality+2))
+    local port_tuic=$((port_reality+3))
+    local port_snell=$((port_reality+4))
+
+    # 4. 生成 Sing-box 全协议统一配置文件
+    echo "[3/5] 正在生成 Sing-box 全协议配置与 Snell-v6 双栈配置..."
+    cat > /opt/suoha_quick/singbox.json <<EOF
 {
-    "inbounds": [
+  "log": {
+    "level": "error",
+    "timestamp": true
+  },
+  "inbounds": [
+    {
+      "type": "vless",
+      "tag": "argo-vless-in",
+      "listen": "127.0.0.1",
+      "listen_port": ${port_argo_vl},
+      "users": [
         {
-            "tag": "vless-in",
-            "port": $port_vless,
-            "listen": "127.0.0.1",
-            "protocol": "vless",
-            "settings": {
-                "decryption": "none",
-                "clients": [
-                    {
-                        "id": "$uuid"
-                    }
-                ]
-            },
-            "streamSettings": {
-                "network": "ws",
-                "wsSettings": {
-                    "path": "/$urlpath_vless"
-                }
-            }
-        },
-        {
-            "tag": "trojan-in",
-            "port": $port_trojan,
-            "listen": "127.0.0.1",
-            "protocol": "trojan",
-            "settings": {
-                "clients": [
-                    {
-                        "password": "$uuid"
-                    }
-                ]
-            },
-            "streamSettings": {
-                "network": "ws",
-                "wsSettings": {
-                    "path": "/$urlpath_trojan"
-                }
-            }
+          "uuid": "${uuid}"
         }
-    ],
-    "outbounds": [
+      ],
+      "transport": {
+        "type": "ws",
+        "path": "/${urlpath_vless}"
+      }
+    },
+    {
+      "type": "trojan",
+      "tag": "argo-trojan-in",
+      "listen": "127.0.0.1",
+      "listen_port": ${port_argo_tr},
+      "users": [
         {
-            "protocol": "freedom",
-            "settings": {}
+          "password": "${uuid}"
         }
-    ]
+      ],
+      "transport": {
+        "type": "ws",
+        "path": "/${urlpath_trojan}"
+      }
+    },
+    {
+      "type": "vless",
+      "tag": "vless-reality-in",
+      "listen": "::",
+      "listen_port": ${port_reality},
+      "users": [
+        {
+          "uuid": "${uuid}",
+          "flow": "xtls-rprx-vision"
+        }
+      ],
+      "tls": {
+        "enabled": true,
+        "server_name": "www.bing.com",
+        "reality": {
+          "enabled": true,
+          "handshake": {
+            "server": "www.bing.com",
+            "server_port": 443
+          },
+          "private_key": "${reality_priv}",
+          "short_id": [
+            "${reality_sid}"
+          ]
+        }
+      }
+    },
+    {
+      "type": "anytls",
+      "tag": "anytls-in",
+      "listen": "::",
+      "listen_port": ${port_anytls},
+      "users": [
+        {
+          "password": "${password_all}"
+        }
+      ],
+      "padding_scheme": [
+        "stop=8",
+        "0=30-30",
+        "1=100-400",
+        "2=400-500,c,500-1000,c,500-1000,c,500-1000,c,500-1000",
+        "3=9-9,500-1000",
+        "4=500-1000",
+        "5=500-1000",
+        "6=500-1000",
+        "7=500-1000"
+      ],
+      "tls": {
+        "enabled": true,
+        "server_name": "www.bing.com",
+        "certificate_path": "/opt/suoha_quick/cert/bing.crt",
+        "key_path": "/opt/suoha_quick/cert/bing.key"
+      }
+    },
+    {
+      "type": "hysteria2",
+      "tag": "hy2-in",
+      "listen": "::",
+      "listen_port": ${port_hy2},
+      "users": [
+        {
+          "password": "${password_all}"
+        }
+      ],
+      "tls": {
+        "enabled": true,
+        "alpn": [
+          "h3"
+        ],
+        "certificate_path": "/opt/suoha_quick/cert/bing.crt",
+        "key_path": "/opt/suoha_quick/cert/bing.key"
+      }
+    },
+    {
+      "type": "tuic",
+      "tag": "tuic-in",
+      "listen": "::",
+      "listen_port": ${port_tuic},
+      "users": [
+        {
+          "uuid": "${uuid}",
+          "password": "${password_all}"
+        }
+      ],
+      "congestion_control": "bbr",
+      "zero_rtt_handshake": false,
+      "tls": {
+        "enabled": true,
+        "alpn": [
+          "h3"
+        ],
+        "certificate_path": "/opt/suoha_quick/cert/bing.crt",
+        "key_path": "/opt/suoha_quick/cert/bing.key"
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "direct",
+      "tag": "direct"
+    }
+  ]
 }
 EOF
 
-# 精确记录 Xray PID
-/opt/suoha_quick/xray/xray run -config /opt/suoha_quick/xray/config.json >/dev/null 2>&1 &
-echo $! > /opt/suoha_quick/xray.pid
+    # 启动 Sing-box
+    nohup /opt/suoha_quick/sing-box run -c /opt/suoha_quick/singbox.json >/opt/suoha_quick/singbox.log 2>&1 &
+    echo $! > /opt/suoha_quick/singbox.pid
 
-# 精确记录 cloudflared 实例 PID
-/opt/suoha_quick/cloudflared-linux tunnel --url http://127.0.0.1:$port_vless --no-autoupdate --edge-ip-version $ips --protocol http2 >argo_vless.log 2>&1 &
-echo $! > /opt/suoha_quick/cf_vl.pid
+    # 配置并启动 Snell-v6 (监听 ::0 支持原生 IPv6 接入)
+    local snell_psk
+    snell_psk=$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9' | head -c 16)
+    local snell_installed=0
+    if [ -x /opt/suoha_quick/snell-server ]; then
+        cat > /opt/suoha_quick/snell.conf <<EOF
+[snell-server]
+listen = ::0:${port_snell}
+psk = ${snell_psk}
+ipv6 = true
+obfs = off
+EOF
+        nohup /opt/suoha_quick/snell-server -c /opt/suoha_quick/snell.conf >/opt/suoha_quick/snell.log 2>&1 &
+        echo $! > /opt/suoha_quick/snell.pid
+        snell_installed=1
+    fi
 
-/opt/suoha_quick/cloudflared-linux tunnel --url http://127.0.0.1:$port_trojan --no-autoupdate --edge-ip-version $ips --protocol http2 >argo_trojan.log 2>&1 &
-echo $! > /opt/suoha_quick/cf_tr.pid
+    # 5. 自动探测出口 IP 协议栈并拉起双 Argo 隧道
+    echo "[4/5] 正在拉起 Cloudflare Argo 双协议临时隧道 (VLESS + Trojan)..."
+    local server_ip
+    server_ip=$(get_server_ip)
+    local server_ipv6
+    server_ipv6=$(get_server_ipv6)
 
-sleep 2
+    local ips=4
+    if [ -z "$server_ip" ] && [ -n "$server_ipv6" ]; then
+        ips=6
+    fi
 
-n=0
-while true
-do
-n=$[$n+1]
-clear
-echo "等待 cloudflare argo 生成双协议专属地址，已等待 $n 秒..."
-argo_vl=$(grep -oE "https://[a-zA-Z0-9.-]+\.trycloudflare\.com" argo_vless.log | head -n 1 | awk -F// '{print $2}')
-argo_tr=$(grep -oE "https://[a-zA-Z0-9.-]+\.trycloudflare\.com" argo_trojan.log | head -n 1 | awk -F// '{print $2}')
+    local isp
+    isp=$(curl -${ips} -s --connect-timeout 3 https://speed.cloudflare.com/meta 2>/dev/null | awk -F\" '{print $26"-"$18"-"$30}' | sed -e 's/ /_/g')
+    local node_tag
+    node_tag=$(echo "$isp" | sed -e 's/_/%20/g' -e 's/,/%2C/g')
+    if [[ -z "$node_tag" || "$node_tag" == "--" || "$node_tag" == "-" ]]; then
+        node_tag="Suoha_Node"
+    fi
 
-if [ $n == 20 ]
-then
-    n=0
-    [ -f "/opt/suoha_quick/cf_vl.pid" ] && kill -9 $(cat /opt/suoha_quick/cf_vl.pid) >/dev/null 2>&1
-    [ -f "/opt/suoha_quick/cf_tr.pid" ] && kill -9 $(cat /opt/suoha_quick/cf_tr.pid) >/dev/null 2>&1
-    rm -rf argo_vless.log argo_trojan.log
-    clear
-    echo "argo 获取超时，正在重新尝试建立双隧道..."
-    /opt/suoha_quick/cloudflared-linux tunnel --url http://127.0.0.1:$port_vless --no-autoupdate --edge-ip-version $ips --protocol http2 >argo_vless.log 2>&1 &
+    /opt/suoha_quick/cloudflared-linux tunnel --url "http://127.0.0.1:${port_argo_vl}" --no-autoupdate --edge-ip-version "$ips" --protocol http2 > /opt/suoha_quick/argo_vless.log 2>&1 &
     echo $! > /opt/suoha_quick/cf_vl.pid
-    /opt/suoha_quick/cloudflared-linux tunnel --url http://127.0.0.1:$port_trojan --no-autoupdate --edge-ip-version $ips --protocol http2 >argo_trojan.log 2>&1 &
+
+    /opt/suoha_quick/cloudflared-linux tunnel --url "http://127.0.0.1:${port_argo_tr}" --no-autoupdate --edge-ip-version "$ips" --protocol http2 > /opt/suoha_quick/argo_trojan.log 2>&1 &
     echo $! > /opt/suoha_quick/cf_tr.pid
-    sleep 2
-elif [[ -z "$argo_vl" || -z "$argo_tr" ]]
-then
-    sleep 1
-else
-    rm -rf argo_vless.log argo_trojan.log
-    break
-fi
-done
-clear
 
-node_tag=$(echo $isp | sed -e 's/_/%20/g' -e 's/,/%2C/g')
-if [[ -z "$node_tag" || "$node_tag" == "--" ]]; then
-    node_tag="Argo_Node"
-fi
+    local wait_sec=0
+    local argo_vl=""
+    local argo_tr=""
+    while true; do
+        wait_sec=$((wait_sec+1))
+        argo_vl=$(grep -oE "https://[a-zA-Z0-9.-]+\.trycloudflare\.com" /opt/suoha_quick/argo_vless.log 2>/dev/null | head -n 1 | awk -F// '{print $2}')
+        argo_tr=$(grep -oE "https://[a-zA-Z0-9.-]+\.trycloudflare\.com" /opt/suoha_quick/argo_trojan.log 2>/dev/null | head -n 1 | awk -F// '{print $2}')
 
-opt_domains=("cf.090227.xyz" "cloudflare.182682.xyz")
-opt_labels=("优选cf.090227" "优选182682")
+        if [ -n "$argo_vl" ] && [ -n "$argo_tr" ]; then
+            rm -f /opt/suoha_quick/argo_vless.log /opt/suoha_quick/argo_trojan.log
+            break
+        fi
 
-> nodes.txt
+        if [ $wait_sec -ge 25 ]; then
+            wait_sec=0
+            [ -f "/opt/suoha_quick/cf_vl.pid" ] && kill -9 "$(cat /opt/suoha_quick/cf_vl.pid)" >/dev/null 2>&1
+            [ -f "/opt/suoha_quick/cf_tr.pid" ] && kill -9 "$(cat /opt/suoha_quick/cf_tr.pid)" >/dev/null 2>&1
+            rm -f /opt/suoha_quick/argo_vless.log /opt/suoha_quick/argo_trojan.log
+            echo "Argo 隧道获取超时，正在自动重试建立双隧道..."
+            /opt/suoha_quick/cloudflared-linux tunnel --url "http://127.0.0.1:${port_argo_vl}" --no-autoupdate --edge-ip-version "$ips" --protocol http2 > /opt/suoha_quick/argo_vless.log 2>&1 &
+            echo $! > /opt/suoha_quick/cf_vl.pid
+            /opt/suoha_quick/cloudflared-linux tunnel --url "http://127.0.0.1:${port_argo_tr}" --no-autoupdate --edge-ip-version "$ips" --protocol http2 > /opt/suoha_quick/argo_trojan.log 2>&1 &
+            echo $! > /opt/suoha_quick/cf_tr.pid
+            sleep 2
+        else
+            sleep 1
+        fi
+    done
 
-cat>clash.yaml<<EOF
+    # 6. 生成全协议节点链接与 Clash / Mihomo 配置文件
+    echo "[5/5] 正在生成全协议节点链接与聚合订阅文件..."
+    > /opt/suoha_quick/nodes.txt
+    > /opt/suoha_quick/surge.conf
+
+    cat > /opt/suoha_quick/clash.yaml <<EOF
 port: 7890
 socks-port: 7891
 allow-lan: false
@@ -284,20 +483,21 @@ log-level: info
 proxies:
 EOF
 
-proxy_names=()
+    local proxy_names=()
+    local opt_domains=("cf.090227.xyz" "cloudflare.182682.xyz")
+    local opt_labels=("优选cf.090227" "优选182682")
 
-vless_domains=("$argo_vl" "${opt_domains[@]}")
-vless_labels=("默认Argo" "${opt_labels[@]}")
-
-for idx in "${!vless_domains[@]}"; do
-    d="${vless_domains[$idx]}"
-    l="${vless_labels[$idx]}"
-
-    vless_tls="vless://${uuid}@${d}:443?encryption=none&security=tls&sni=${argo_vl}&type=ws&host=${argo_vl}&path=%2F${urlpath_vless}#${node_tag}-VLESS-${l}-443"
-    echo "$vless_tls" >> nodes.txt
-    proxy_names+=("${node_tag}-VLESS-${l}-443")
-    cat>>clash.yaml<<EOF
-  - name: "${node_tag}-VLESS-${l}-443"
+    # (A) VLESS Argo 节点组
+    local vless_domains=("$argo_vl" "${opt_domains[@]}")
+    local vless_labels=("默认Argo" "${opt_labels[@]}")
+    for idx in "${!vless_domains[@]}"; do
+        local d="${vless_domains[$idx]}"
+        local l="${vless_labels[$idx]}"
+        local pname="${node_tag}-VLESS-${l}-443"
+        echo "vless://${uuid}@${d}:443?encryption=none&security=tls&sni=${argo_vl}&type=ws&host=${argo_vl}&path=%2F${urlpath_vless}#${pname}" >> /opt/suoha_quick/nodes.txt
+        proxy_names+=("$pname")
+        cat >> /opt/suoha_quick/clash.yaml <<EOF
+  - name: "${pname}"
     type: vless
     server: ${d}
     port: 443
@@ -312,20 +512,19 @@ for idx in "${!vless_domains[@]}"; do
       headers:
         Host: ${argo_vl}
 EOF
-done
+    done
 
-trojan_domains=("$argo_tr" "${opt_domains[@]}")
-trojan_labels=("默认Argo" "${opt_labels[@]}")
-
-for idx in "${!trojan_domains[@]}"; do
-    d="${trojan_domains[$idx]}"
-    l="${trojan_labels[$idx]}"
-
-    trojan_tls="trojan://${uuid}@${d}:443?security=tls&sni=${argo_tr}&type=ws&host=${argo_tr}&path=%2F${urlpath_trojan}#${node_tag}-Trojan-${l}-443"
-    echo "$trojan_tls" >> nodes.txt
-    proxy_names+=("${node_tag}-Trojan-${l}-443")
-    cat>>clash.yaml<<EOF
-  - name: "${node_tag}-Trojan-${l}-443"
+    # (B) Trojan Argo 节点组
+    local trojan_domains=("$argo_tr" "${opt_domains[@]}")
+    local trojan_labels=("默认Argo" "${opt_labels[@]}")
+    for idx in "${!trojan_domains[@]}"; do
+        local d="${trojan_domains[$idx]}"
+        local l="${trojan_labels[$idx]}"
+        local pname="${node_tag}-Trojan-${l}-443"
+        echo "trojan://${uuid}@${d}:443?security=tls&sni=${argo_tr}&type=ws&host=${argo_tr}&path=%2F${urlpath_trojan}#${pname}" >> /opt/suoha_quick/nodes.txt
+        proxy_names+=("$pname")
+        cat >> /opt/suoha_quick/clash.yaml <<EOF
+  - name: "${pname}"
     type: trojan
     server: ${d}
     port: 443
@@ -338,896 +537,197 @@ for idx in "${!trojan_domains[@]}"; do
       headers:
         Host: ${argo_tr}
 EOF
-done
+    done
 
-cat>>clash.yaml<<EOF
+    # 确定直连连接地址（优先 IPv4，无 IPv4 则使用 [IPv6]）
+    local direct_host=""
+    local direct_yaml_host=""
+    local snell_host=""
+    if [ -n "$server_ip" ]; then
+        direct_host="$server_ip"
+        direct_yaml_host="$server_ip"
+    elif [ -n "$server_ipv6" ]; then
+        direct_host="[${server_ipv6}]"
+        direct_yaml_host="$server_ipv6"
+    fi
+
+    if [ -n "$direct_host" ]; then
+        # (C) VLESS Reality Vision 直连节点
+        local pname_rel="${node_tag}-VLESS-Reality"
+        echo "vless://${uuid}@${direct_host}:${port_reality}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.bing.com&fp=chrome&pbk=${reality_pub}&sid=${reality_sid}&type=tcp&headerType=none#${pname_rel}" >> /opt/suoha_quick/nodes.txt
+        proxy_names+=("$pname_rel")
+        cat >> /opt/suoha_quick/clash.yaml <<EOF
+  - name: "${pname_rel}"
+    type: vless
+    server: ${direct_yaml_host}
+    port: ${port_reality}
+    uuid: ${uuid}
+    network: tcp
+    tls: true
+    udp: true
+    flow: xtls-rprx-vision
+    servername: www.bing.com
+    reality-opts:
+      public-key: ${reality_pub}
+      short-id: ${reality_sid}
+    client-fingerprint: chrome
+EOF
+
+        # (D) AnyTLS 直连节点 (自签 www.bing.com)
+        local pname_any="${node_tag}-AnyTLS-Bing"
+        echo "anytls://${password_all}@${direct_host}:${port_anytls}?sni=www.bing.com&insecure=1#${pname_any}" >> /opt/suoha_quick/nodes.txt
+        proxy_names+=("$pname_any")
+        cat >> /opt/suoha_quick/clash.yaml <<EOF
+  - name: "${pname_any}"
+    type: anytls
+    server: ${direct_yaml_host}
+    port: ${port_anytls}
+    password: "${password_all}"
+    client-fingerprint: chrome
+    udp: true
+    sni: www.bing.com
+    skip-cert-verify: true
+EOF
+
+        # (E) Hysteria2 直连节点 (自签 www.bing.com)
+        local pname_hy2="${node_tag}-Hysteria2-Bing"
+        echo "hysteria2://${password_all}@${direct_host}:${port_hy2}?sni=www.bing.com&insecure=1#${pname_hy2}" >> /opt/suoha_quick/nodes.txt
+        proxy_names+=("$pname_hy2")
+        cat >> /opt/suoha_quick/clash.yaml <<EOF
+  - name: "${pname_hy2}"
+    type: hysteria2
+    server: ${direct_yaml_host}
+    port: ${port_hy2}
+    password: "${password_all}"
+    sni: www.bing.com
+    skip-cert-verify: true
+    alpn:
+      - h3
+EOF
+
+        # (F) TUIC v5 直连节点 (自签 www.bing.com)
+        local pname_tuic="${node_tag}-TUICv5-Bing"
+        echo "tuic://${uuid}:${password_all}@${direct_host}:${port_tuic}?congestion_control=bbr&alpn=h3&sni=www.bing.com&udp_relay_mode=native&allow_insecure=1#${pname_tuic}" >> /opt/suoha_quick/nodes.txt
+        proxy_names+=("$pname_tuic")
+        cat >> /opt/suoha_quick/clash.yaml <<EOF
+  - name: "${pname_tuic}"
+    type: tuic
+    server: ${direct_yaml_host}
+    port: ${port_tuic}
+    uuid: ${uuid}
+    password: "${password_all}"
+    alpn:
+      - h3
+    disable-sni: false
+    reduce-rtt: true
+    udp-relay-mode: native
+    congestion-controller: bbr
+    sni: www.bing.com
+    skip-cert-verify: true
+EOF
+    fi
+
+    # (G) Snell-V6 节点 (优先绑定公网 IPv6，若无则回退 IPv4)
+    local snell_display_line=""
+    if [ $snell_installed -eq 1 ]; then
+        if [ -n "$server_ipv6" ]; then
+            snell_host="$server_ipv6"
+        else
+            snell_host="$server_ip"
+        fi
+
+        if [ -n "$snell_host" ]; then
+            local pname_snell="${node_tag}-Snell-V6"
+            proxy_names+=("$pname_snell")
+            cat >> /opt/suoha_quick/clash.yaml <<EOF
+  - name: "${pname_snell}"
+    type: snell
+    server: "${snell_host}"
+    port: ${port_snell}
+    psk: "${snell_psk}"
+    version: 4
+    udp: true
+EOF
+            snell_display_line="${pname_snell} = snell, ${snell_host}, ${port_snell}, psk=${snell_psk}, version=4, reuse=true"
+            echo "$snell_display_line" > /opt/suoha_quick/surge.conf
+        fi
+    fi
+
+    cat >> /opt/suoha_quick/clash.yaml <<EOF
 proxy-groups:
   - name: PROXY
     type: select
     proxies:
 EOF
 
-for pname in "${proxy_names[@]}"; do
-    echo "      - \"${pname}\"" >> clash.yaml
-done
+    for pname in "${proxy_names[@]}"; do
+        echo "      - \"${pname}\"" >> /opt/suoha_quick/clash.yaml
+    done
 
-cat>>clash.yaml<<EOF
+    cat >> /opt/suoha_quick/clash.yaml <<EOF
 rules:
   - MATCH,PROXY
 EOF
 
-if [ $(grep -i PRETTY_NAME /etc/os-release | cut -d \" -f2 | awk '{print $1}') == "Alpine" ]
-then
-    base64 nodes.txt | tr -d '\n' > sub.txt
-else
-    base64 -w 0 nodes.txt > sub.txt
-fi
+    # 生成 Base64 通用订阅
+    if [ "$OS_NAME" == "Alpine" ]; then
+        base64 /opt/suoha_quick/nodes.txt | tr -d '\n' > /opt/suoha_quick/sub.txt
+    else
+        base64 -w 0 /opt/suoha_quick/nodes.txt > /opt/suoha_quick/sub.txt
+    fi
 
-server_ip=$(get_server_ip)
-if [ -z "$server_ip" ]; then
-    server_ip="$argo_vl"
-fi
+    local sub_host=""
+    if [ -n "$server_ip" ]; then
+        sub_host="$server_ip"
+    elif [ -n "$server_ipv6" ]; then
+        sub_host="[${server_ipv6}]"
+    else
+        sub_host="$argo_vl"
+    fi
 
-sub_port=$(get_or_create_sub_port)
-sync_to_static_web "/opt/suoha_quick"
-start_sub_server "/var/www/suoha_sub" "$sub_port"
+    local sub_port
+    sub_port=$(get_or_create_sub_port)
+    sync_to_static_web "/opt/suoha_quick"
+    start_sub_server "/var/www/suoha_sub" "$sub_port"
 
-sub_online_url="http://${server_ip}:${sub_port}/sub.txt"
-clash_online_url="http://${server_ip}:${sub_port}/clash.yaml"
+    local sub_online_url="http://${sub_host}:${sub_port}/sub.txt"
+    local clash_online_url="http://${sub_host}:${sub_port}/clash.yaml"
 
-cat>v2ray.txt<<EOF
-======================== 一键梭哈 443 TLS 节点列表 ========================
-$(cat nodes.txt)
+    cat > /opt/suoha_quick/v2ray.txt <<EOF
+======================== 一键全协议梭哈节点列表 ========================
+[URI 通用节点链接 (VLESS-Argo / Trojan-Argo / Reality / AnyTLS / HY2 / TUIC)]
+$(cat /opt/suoha_quick/nodes.txt)
 
-端口替换提示:
-443 端口可根据需要改为 CF 其它 TLS 端口: 2053, 2083, 2087, 2096, 8443
+[Snell-V6 专属配置 (Surge / Clash.Meta / Mihomo)]
+${snell_display_line:-未检测到可用公网 IP，跳过 Snell 生成}
+
+======================== 端口与证书说明 ========================
+- Argo 节点 443 端口可按需替换为 CF 其它 TLS 端口: 2053, 2083, 2087, 2096, 8443
+- AnyTLS / Hysteria2 / TUIC 均已自动签发 www.bing.com 证书 (客户端需开启跳过证书验证)
+- VLESS Reality 伪装域名: www.bing.com | PublicKey: ${reality_pub} | ShortID: ${reality_sid}
 
 ======================== 客户端订阅及导入链接 ========================
 本机固定订阅服务端口: ${sub_port} (已永久保存，重新梭哈无需重新导入客户端)
 
-1. 通用订阅链接 (支持 v2rayN / NekoBox / Shadowrocket):
+1. 通用在线订阅链接 (v2rayN / NekoBox / Shadowrocket / Karing):
 ${sub_online_url}
 
-2. v2rayN / NekoBox 一键导入协议链接:
+2. v2rayN / NekoBox 一键导入链接:
 sub://${sub_online_url}
 
 3. Clash / Clash.Meta / Mihomo 一键导入配置:
 clash://install-config?url=${clash_online_url}
 
-4. Clash 在线配置文件直链:
+4. Clash / Mihomo 在线 YAML 直链 (含全部 7 种协议含 Snell):
 ${clash_online_url}
 
-持久订阅存储目录: /var/www/suoha_sub/
+快捷卸载命令: bash $(readlink -f "$0" 2>/dev/null || echo "$0") uninstall
 =====================================================================
 EOF
 
-cat v2ray.txt
-echo -e "\n信息已经保存在 /opt/suoha_quick/v2ray.txt,再次查看请运行 cat /opt/suoha_quick/v2ray.txt"
+    clear
+    cat /opt/suoha_quick/v2ray.txt
+    echo -e "\n所有配置已保存至 /opt/suoha_quick/v2ray.txt，随时执行 cat /opt/suoha_quick/v2ray.txt 查看。"
 }
 
-function install_ipv6_ss(){
-    clear
-    echo "正在检测机器公网 IPv6 地址..."
-    local ipv6_addr
-    ipv6_addr=$(get_server_ipv6)
-
-    if [ -z "$ipv6_addr" ]; then
-        echo "未检测到可用的公网 IPv6 地址，无法部署 IPv6 直连 SS 节点！"
-        read -p "按回车键返回主菜单..."
-        return
-    fi
-
-    echo "检测到公网 IPv6: $ipv6_addr"
-
-    local xray_dir=""
-    local is_installed_mode=0
-    local cfg_json=""
-    local xray_bin=""
-
-    if [ -f "/opt/suoha/config.json" ]; then
-        xray_dir="/opt/suoha"
-        is_installed_mode=1
-        cfg_json="/opt/suoha/config.json"
-        xray_bin="/opt/suoha/xray"
-    elif [ -f "/opt/suoha_quick/xray/config.json" ]; then
-        xray_dir="/opt/suoha_quick"
-        is_installed_mode=0
-        cfg_json="/opt/suoha_quick/xray/config.json"
-        xray_bin="/opt/suoha_quick/xray/xray"
-    else
-        echo "未检测到正在运行的 Xray 服务，请先执行【1.梭哈模式】或【2.安装服务】！"
-        read -p "按回车键返回主菜单..."
-        return
-    fi
-
-    local ss_port=$[$RANDOM%10000+30000]
-    local ss_password=$(cat /proc/sys/kernel/random/uuid | awk -F- '{print $1$2}')
-    local ss_method="aes-128-gcm"
-
-    echo "正在注入 IPv6 Shadowsocks 节点 (端口: $ss_port, 加密: $ss_method)..."
-
-    # 使用 Python 安全操作 JSON，杜绝写入截断
-    python3 -c "
-import json, sys
-
-cfg_file = '$cfg_json'
-try:
-    with open(cfg_file, 'r', encoding='utf-8') as f:
-        data = json.load(f)
-    
-    # 移除已有的 ss-ipv6，保留原本的所有 vless 和 trojan 入站
-    data['inbounds'] = [ib for ib in data.get('inbounds', []) if ib.get('tag') != 'ss-ipv6']
-    
-    ss_ib = {
-        'tag': 'ss-ipv6',
-        'port': int('$ss_port'),
-        'listen': '::',
-        'protocol': 'shadowsocks',
-        'settings': {
-            'method': '$ss_method',
-            'password': '$ss_password',
-            'network': 'tcp,udp'
-        }
-    }
-    data['inbounds'].append(ss_ib)
-    
-    with open(cfg_file, 'w', encoding='utf-8') as f:
-        json.dump(data, f, indent=4, ensure_ascii=False)
-except Exception as e:
-    sys.exit(1)
-"
-    if [ $? -ne 0 ]; then
-        echo "注入 Xray 配置失败，请检查 python3 环境！"
-        read -p "按回车键返回主菜单..."
-        return
-    fi
-
-    # 只精准重启 Xray 进程，严禁使用盲目 pkill，防止杀掉正在连接的 cloudflared 隧道
-    if [ $is_installed_mode -eq 1 ]; then
-        if [ $(grep -i PRETTY_NAME /etc/os-release | cut -d \" -f2 | awk '{print $1}') == "Alpine" ]
-        then
-            /etc/local.d/xray.start >/dev/null 2>&1
-        else
-            systemctl restart xray.service >/dev/null 2>&1
-        fi
-    else
-        # 针对梭哈模式，只精准击杀记录的 xray PID，绝不触碰 cloudflared
-        if [ -f "/opt/suoha_quick/xray.pid" ]; then
-            kill -9 $(cat /opt/suoha_quick/xray.pid) >/dev/null 2>&1
-            rm -f /opt/suoha_quick/xray.pid
-        else
-            kill -9 $(pgrep -f "/opt/suoha_quick/xray/xray") >/dev/null 2>&1
-        fi
-        nohup $xray_bin run -config $cfg_json >/dev/null 2>&1 &
-        echo $! > /opt/suoha_quick/xray.pid
-    fi
-
-    local ss_user_info="${ss_method}:${ss_password}"
-    local ss_base64
-    if [ $(grep -i PRETTY_NAME /etc/os-release | cut -d \" -f2 | awk '{print $1}') == "Alpine" ]
-    then
-        ss_base64=$(echo -n "$ss_user_info" | base64 | tr -d '\n')
-    else
-        ss_base64=$(echo -n "$ss_user_info" | base64 -w 0)
-    fi
-    local ss_link="ss://${ss_base64}@[${ipv6_addr}]:${ss_port}#IPv6-SS-Direct"
-
-    # 读取旧 nodes.txt，去除旧 SS 节点后安全追加，绝不破坏原有节点
-    local work_nodes="${xray_dir}/nodes.txt"
-    touch "$work_nodes"
-    sed -i '/IPv6-SS-Direct/d' "$work_nodes"
-    echo "$ss_link" >> "$work_nodes"
-
-    # 追加到 clash.yaml
-    local clash_file="${xray_dir}/clash.yaml"
-    if [ -f "$clash_file" ]; then
-        python3 -c "
-yaml_file = '$clash_file'
-try:
-    with open(yaml_file, 'r', encoding='utf-8') as f:
-        lines = f.readlines()
-    
-    filtered = []
-    skip = False
-    for l in lines:
-        if 'name: \"IPv6-SS-Direct\"' in l:
-            skip = True
-            continue
-        if skip and l.startswith('  - name:'):
-            skip = False
-        if not skip and '      - \"IPv6-SS-Direct\"' not in l:
-            filtered.append(l)
-    
-    new_lines = []
-    proxy_inserted = False
-    group_inserted = False
-    for line in filtered:
-        if line.strip().startswith('proxy-groups:') and not proxy_inserted:
-            new_lines.append('  - name: \"IPv6-SS-Direct\"\n')
-            new_lines.append('    type: ss\n')
-            new_lines.append('    server: \"${ipv6_addr}\"\n')
-            new_lines.append('    port: ${ss_port}\n')
-            new_lines.append('    cipher: ${ss_method}\n')
-            new_lines.append('    password: \"${ss_password}\"\n')
-            new_lines.append('    udp: true\n')
-            proxy_inserted = True
-        if line.strip().startswith('rules:') and not group_inserted:
-            new_lines.append('      - \"IPv6-SS-Direct\"\n')
-            group_inserted = True
-        new_lines.append(line)
-    
-    with open(yaml_file, 'w', encoding='utf-8') as f:
-        f.writelines(new_lines)
-except Exception:
-    pass
-"
-    fi
-
-    # 重新生成 Base64 订阅并同步
-    if [ $(grep -i PRETTY_NAME /etc/os-release | cut -d \" -f2 | awk '{print $1}') == "Alpine" ]
-    then
-        base64 "$work_nodes" | tr -d '\n' > "${xray_dir}/sub.txt"
-    else
-        base64 -w 0 "$work_nodes" > "${xray_dir}/sub.txt"
-    fi
-
-    sync_to_static_web "$xray_dir"
-
-    local sub_port=$(get_or_create_sub_port)
-    local server_ip=$(get_server_ip)
-    local sub_online_url="http://${server_ip}:${sub_port}/sub.txt"
-
-    clear
-    echo "=========================================================="
-    echo "       IPv6 Shadowsocks 直连节点共存部署成功！            "
-    echo "=========================================================="
-    echo "SS 直连链接:"
-    echo "$ss_link"
-    echo ""
-    echo "原 Argo 临时隧道依然持续运行，所有节点完好无损！"
-    echo "客户端直接点击【更新订阅】即可同步获取全部节点："
-    echo "订阅地址: ${sub_online_url}"
-    echo "=========================================================="
-    echo ""
-    read -p "按回车键返回主菜单..."
-}
-
-function installtunnel(){
-mkdir -p /opt/suoha/ >/dev/null 2>&1
-cd /opt/suoha
-rm -rf xray cloudflared-linux xray.zip
-
-case "$(uname -m)" in
-    x86_64 | x64 | amd64 )
-    curl -L https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip -o xray.zip
-    curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared-linux
-    ;;
-    i386 | i686 )
-    curl -L https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-32.zip -o xray.zip
-    curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-386 -o cloudflared-linux
-    ;;
-    armv8 | arm64 | aarch64 )
-    echo arm64
-    curl -L https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-arm64-v8a.zip -o xray.zip
-    curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64 -o cloudflared-linux
-    ;;
-    armv7l )
-    curl -L https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-arm32-v7a.zip -o xray.zip
-    curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm -o cloudflared-linux
-    ;;
-    * )
-    echo "当前架构$(uname -m)没有适配"
-    exit
-    ;;
-esac
-mkdir xray
-unzip -d xray xray.zip
-chmod +x cloudflared-linux xray/xray
-mv xray/xray /opt/suoha/
-rm -rf xray xray.zip
-
-uuid=$(cat /proc/sys/kernel/random/uuid)
-urlpath_vless="vl-$(echo $uuid | awk -F- '{print $1}')"
-urlpath_trojan="tr-$(echo $uuid | awk -F- '{print $1}')"
-port_vless=$[$RANDOM+10000]
-port_trojan=$[$port_vless+1]
-
-cat>/opt/suoha/config.json<<EOF
-{
-    "inbounds": [
-        {
-            "tag": "vless-in",
-            "port": $port_vless,
-            "listen": "127.0.0.1",
-            "protocol": "vless",
-            "settings": {
-                "decryption": "none",
-                "clients": [
-                    {
-                        "id": "$uuid"
-                    }
-                ]
-            },
-            "streamSettings": {
-                "network": "ws",
-                "wsSettings": {
-                    "path": "/$urlpath_vless"
-                }
-            }
-        },
-        {
-            "tag": "trojan-in",
-            "port": $port_trojan,
-            "listen": "127.0.0.1",
-            "protocol": "trojan",
-            "settings": {
-                "clients": [
-                    {
-                        "password": "$uuid"
-                    }
-                ]
-            },
-            "streamSettings": {
-                "network": "ws",
-                "wsSettings": {
-                    "path": "/$urlpath_trojan"
-                }
-            }
-        }
-    ],
-    "outbounds": [
-        {
-            "protocol": "freedom",
-            "settings": {}
-        }
-    ]
-}
-EOF
-
-clear
-echo "复制下面的链接,用浏览器打开并授权需要绑定的域名"
-echo "在网页中授权完毕后会继续进行下一步设置"
-/opt/suoha/cloudflared-linux --edge-ip-version $ips --protocol http2 tunnel login
-clear
-/opt/suoha/cloudflared-linux --edge-ip-version $ips --protocol http2 tunnel list >argo.log 2>&1
-echo -e "ARGO TUNNEL当前已经绑定的服务如下\n"
-sed 1,2d argo.log | awk '{print $2}'
-echo -e "\n自定义一个完整二级域名,例如 xxx.example.com"
-echo "必须是网页里面绑定授权的域名才生效,不能乱输入"
-read -p "输入绑定域名的完整二级域名: " domain
-if [ -z "$domain" ]
-then
-    echo "没有设置域名"
-    exit
-elif [ $(echo $domain | grep "\." | wc -l) == 0 ]
-then
-    echo "域名格式不正确"
-    exit
-fi
-name=$(echo $domain | awk -F\. '{print $1}')
-if [ $(sed 1,2d argo.log | awk '{print $2}' | grep -w $name | wc -l) == 0 ]
-then
-    echo "创建TUNNEL $name"
-    /opt/suoha/cloudflared-linux --edge-ip-version $ips --protocol http2 tunnel create $name >argo.log 2>&1
-    echo "TUNNEL $name 创建成功"
-else
-    echo "TUNNEL $name 已经存在"
-    if [ ! -f "/root/.cloudflared/$(sed 1,2d argo.log | awk '{print $1" "$2}' | grep -w $name | awk '{print $1}').json" ]
-    then
-        echo "/root/.cloudflared/$(sed 1,2d argo.log | awk '{print $1" "$2}' | grep -w $name | awk '{print $1}').json 文件不存在"
-        echo "清理TUNNEL $name"
-        /opt/suoha/cloudflared-linux --edge-ip-version $ips --protocol http2 tunnel cleanup $name >argo.log 2>&1
-        echo "删除TUNNEL $name"
-        /opt/suoha/cloudflared-linux --edge-ip-version $ips --protocol http2 tunnel delete $name >argo.log 2>&1
-        echo "重建TUNNEL $name"
-        /opt/suoha/cloudflared-linux --edge-ip-version $ips --protocol http2 tunnel create $name >argo.log 2>&1
-    else
-        echo "清理TUNNEL $name"
-        /opt/suoha/cloudflared-linux --edge-ip-version $ips --protocol http2 tunnel cleanup $name >argo.log 2>&1
-    fi
-fi
-echo "绑定 TUNNEL $name 到域名 $domain"
-/opt/suoha/cloudflared-linux --edge-ip-version $ips --protocol http2 tunnel route dns --overwrite-dns $name $domain >argo.log 2>&1
-echo "$domain 绑定成功"
-tunneluuid=$(cut -d= -f2 argo.log)
-
-node_tag=$(echo $isp | sed -e 's/_/%20/g' -e 's/,/%2C/g')
-if [[ -z "$node_tag" || "$node_tag" == "--" ]]; then
-    node_tag="Argo_Node"
-fi
-
-domains=("$domain" "cf.090227.xyz" "cloudflare.182682.xyz")
-labels=("自定域名" "优选cf.090227" "优选182682")
-
-> /opt/suoha/nodes.txt
-
-cat>/opt/suoha/clash.yaml<<EOF
-port: 7890
-socks-port: 7891
-allow-lan: false
-mode: rule
-log-level: info
-proxies:
-EOF
-
-proxy_names=()
-
-for idx in "${!domains[@]}"; do
-    d="${domains[$idx]}"
-    l="${labels[$idx]}"
-
-    vless_tls="vless://${uuid}@${d}:443?encryption=none&security=tls&sni=${domain}&type=ws&host=${domain}&path=%2F${urlpath_vless}#${node_tag}-VLESS-${l}-443"
-    echo "$vless_tls" >> /opt/suoha/nodes.txt
-    proxy_names+=("${node_tag}-VLESS-${l}-443")
-    cat>>/opt/suoha/clash.yaml<<EOF
-  - name: "${node_tag}-VLESS-${l}-443"
-    type: vless
-    server: ${d}
-    port: 443
-    uuid: ${uuid}
-    cipher: auto
-    tls: true
-    udp: true
-    servername: ${domain}
-    network: ws
-    ws-opts:
-      path: /${urlpath_vless}
-      headers:
-        Host: ${domain}
-EOF
-
-    trojan_tls="trojan://${uuid}@${d}:443?security=tls&sni=${domain}&type=ws&host=${domain}&path=%2F${urlpath_trojan}#${node_tag}-Trojan-${l}-443"
-    echo "$trojan_tls" >> /opt/suoha/nodes.txt
-    proxy_names+=("${node_tag}-Trojan-${l}-443")
-    cat>>/opt/suoha/clash.yaml<<EOF
-  - name: "${node_tag}-Trojan-${l}-443"
-    type: trojan
-    server: ${d}
-    port: 443
-    password: ${uuid}
-    udp: true
-    sni: ${domain}
-    network: ws
-    ws-opts:
-      path: /${urlpath_trojan}
-      headers:
-        Host: ${domain}
-EOF
-done
-
-cat>>/opt/suoha/clash.yaml<<EOF
-proxy-groups:
-  - name: PROXY
-    type: select
-    proxies:
-EOF
-
-for pname in "${proxy_names[@]}"; do
-    echo "      - \"${pname}\"" >> /opt/suoha/clash.yaml
-done
-
-cat>>/opt/suoha/clash.yaml<<EOF
-rules:
-  - MATCH,PROXY
-EOF
-
-if [ $(grep -i PRETTY_NAME /etc/os-release | cut -d \" -f2 | awk '{print $1}') == "Alpine" ]
-then
-    base64 /opt/suoha/nodes.txt | tr -d '\n' > /opt/suoha/sub.txt
-else
-    base64 -w 0 /opt/suoha/nodes.txt > /opt/suoha/sub.txt
-fi
-
-server_ip=$(get_server_ip)
-if [ -z "$server_ip" ]; then
-    server_ip="$domain"
-fi
-
-sub_port=$(get_or_create_sub_port)
-sync_to_static_web "/opt/suoha"
-start_sub_server "/var/www/suoha_sub" "$sub_port"
-
-sub_online_url="http://${server_ip}:${sub_port}/sub.txt"
-clash_online_url="http://${server_ip}:${sub_port}/clash.yaml"
-
-cat>/opt/suoha/v2ray.txt<<EOF
-======================== 节点连接信息 ========================
-$(cat /opt/suoha/nodes.txt)
-
-端口说明:
-443 端口可根据需要改为 CF 其它 TLS 端口: 2053, 2083, 2087, 2096, 8443
-
-======================== 客户端订阅及导入链接 ========================
-本机固定订阅服务端口: ${sub_port} (已永久保存，重新部署无需重新导入客户端)
-
-1. 通用在线订阅链接 (适用于 v2rayN / NekoBox / Shadowrocket):
-${sub_online_url}
-
-2. v2rayN / NekoBox 一键导入协议链接:
-sub://${sub_online_url}
-
-3. Clash / Clash.Meta / Mihomo 一键导入配置:
-clash://install-config?url=${clash_online_url}
-
-4. Clash 在线配置文件直链:
-${clash_online_url}
-
-持久订阅存储目录: /var/www/suoha_sub/
-==============================================================
-EOF
-
-rm -rf argo.log
-
-cat>/opt/suoha/config.yaml<<EOF
-tunnel: $tunneluuid
-credentials-file: /root/.cloudflared/$tunneluuid.json
-
-ingress:
-  - hostname: $domain
-    path: /$urlpath_vless
-    service: http://127.0.0.1:$port_vless
-  - hostname: $domain
-    path: /$urlpath_trojan
-    service: http://127.0.0.1:$port_trojan
-  - service: http_status:404
-EOF
-
-if [ $(grep -i PRETTY_NAME /etc/os-release | cut -d \" -f2 | awk '{print $1}') == "Alpine" ]
-then
-cat>/etc/local.d/cloudflared.start<<EOF
-/opt/suoha/cloudflared-linux --edge-ip-version $ips --protocol http2 tunnel --config /opt/suoha/config.yaml run $name &
-EOF
-cat>/etc/local.d/xray.start<<EOF
-/opt/suoha/xray run -config /opt/suoha/config.json &
-EOF
-chmod +x /etc/local.d/cloudflared.start /etc/local.d/xray.start
-rc-update add local
-/etc/local.d/cloudflared.start >/dev/null 2>&1
-/etc/local.d/xray.start >/dev/null 2>&1
-else
-cat>/lib/systemd/system/cloudflared.service<<EOF
-[Unit]
-Description=Cloudflare Tunnel
-After=network.target
-
-[Service]
-TimeoutStartSec=0
-Type=simple
-ExecStart=/opt/suoha/cloudflared-linux --edge-ip-version $ips --protocol http2 tunnel --config /opt/suoha/config.yaml run $name
-Restart=on-failure
-RestartSec=5s
-
-[Install]
-WantedBy=multi-user.target
-EOF
-cat>/lib/systemd/system/xray.service<<EOF
-[Unit]
-Description=Xray
-After=network.target
-
-[Service]
-TimeoutStartSec=0
-Type=simple
-ExecStart=/opt/suoha/xray run -config /opt/suoha/config.json
-Restart=on-failure
-RestartSec=5s
-
-[Install]
-WantedBy=multi-user.target
-EOF
-systemctl enable cloudflared.service >/dev/null 2>&1
-systemctl enable xray.service >/dev/null 2>&1
-systemctl --system daemon-reload
-systemctl start cloudflared.service
-systemctl start xray.service
-fi
-
-if [ $(grep -i PRETTY_NAME /etc/os-release | cut -d \" -f2 | awk '{print $1}') == "Alpine" ]
-then
-cat>/opt/suoha/suoha.sh<<EOF
-#!/bin/bash
-while true
-do
-if [ \$(ps -ef | grep cloudflared-linux | grep -v grep | wc -l) == 0 ]
-then
-    argostatus=stop
-else
-    argostatus=running
-fi
-if [ \$(ps -ef | grep xray | grep -v grep | wc -l) == 0 ]
-then
-    xraystatus=stop
-else
-    xraystatus=running
-fi
-echo argo \$argostatus
-echo xray \$xraystatus
-echo 1.管理TUNNEL
-echo 2.启动服务
-echo 3.停止服务
-echo 4.重启服务
-echo 5.卸载服务
-echo 6.查看当前订阅与节点链接
-echo 0.退出
-read -p "请选择菜单(默认0): " menu
-if [ -z "\$menu" ]
-then
-    menu=0
-fi
-if [ \$menu == 1 ]
-then
-    clear
-    while true
-    do
-        echo ARGO TUNNEL当前已经绑定的服务如下
-        /opt/suoha/cloudflared-linux tunnel list
-        echo 1.删除TUNNEL
-        echo 0.退出
-        read -p "请选择菜单(默认0): " tunneladmin
-        if [ -z "\$tunneladmin" ]
-        then
-            tunneladmin=0
-        fi
-        if [ \$tunneladmin == 1 ]
-        then
-            read -p "请输入要删除的TUNNEL NAME: " tunnelname
-            echo 断开TUNNEL \$tunnelname
-            /opt/suoha/cloudflared-linux tunnel cleanup \$tunnelname
-            echo 删除TUNNEL \$tunnelname
-            /opt/suoha/cloudflared-linux tunnel delete \$tunnelname
-        else
-            break
-        fi
-    done
-elif [ \$menu == 2 ]
-then
-    kill -9 \$(ps -ef | grep xray | grep -v grep | awk '{print \$1}') >/dev/null 2>&1
-    kill -9 \$(ps -ef | grep cloudflared-linux | grep -v grep | awk '{print \$1}') >/dev/null 2>&1
-    /etc/local.d/cloudflared.start >/dev/null 2>&1
-    /etc/local.d/xray.start >/dev/null 2>&1
-    clear
-    sleep 1
-elif [ \$menu == 3 ]
-then
-    kill -9 \$(ps -ef | grep xray | grep -v grep | awk '{print \$1}') >/dev/null 2>&1
-    kill -9 \$(ps -ef | grep cloudflared-linux | grep -v grep | awk '{print \$1}') >/dev/null 2>&1
-    clear
-    sleep 2
-elif [ \$menu == 4 ]
-then
-    kill -9 \$(ps -ef | grep xray | grep -v grep | awk '{print \$1}') >/dev/null 2>&1
-    kill -9 \$(ps -ef | grep cloudflared-linux | grep -v grep | awk '{print \$1}') >/dev/null 2>&1
-    /etc/local.d/cloudflared.start >/dev/null 2>&1
-    /etc/local.d/xray.start >/dev/null 2>&1
-    clear
-    sleep 1
-elif [ \$menu == 5 ]
-then
-    kill -9 \$(ps -ef | grep xray | grep -v grep | awk '{print \$1}') >/dev/null 2>&1
-    kill -9 \$(ps -ef | grep cloudflared-linux | grep -v grep | awk '{print \$1}') >/dev/null 2>&1
-    pkill -f "http.server" >/dev/null 2>&1
-    rm -rf /opt/suoha /opt/suoha_quick /etc/local.d/cloudflared.start /etc/local.d/xray.start /usr/bin/suoha ~/.cloudflared /etc/suoha_sub_port /var/www/suoha_sub
-    echo 所有服务都卸载完成
-    echo 彻底删除授权记录
-    echo 请访问 https://dash.cloudflare.com/profile/api-tokens
-    echo 删除授权的 Argo Tunnel API Token 即可
-    exit
-elif [ \$menu == 6 ]
-then
-    clear
-    cat /opt/suoha/v2ray.txt
-elif [ \$menu == 0 ]
-then
-    echo 退出成功
-    exit
-fi
-done
-EOF
-else
-cat>/opt/suoha/suoha.sh<<EOF
-#!/bin/bash
-clear
-while true
-do
-echo argo \$(systemctl status cloudflared.service | sed -n '3p')
-echo xray \$(systemctl status xray.service | sed -n '3p')
-echo 1.管理TUNNEL
-echo 2.启动服务
-echo 3.停止服务
-echo 4.重启服务
-echo 5.卸载服务
-echo 6.查看当前订阅与节点链接
-echo 0.退出
-read -p "请选择菜单(默认0): " menu
-if [ -z "\$menu" ]
-then
-    menu=0
-fi
-if [ \$menu == 1 ]
-then
-    clear
-    while true
-    do
-        echo ARGO TUNNEL当前已经绑定的服务如下
-        /opt/suoha/cloudflared-linux tunnel list
-        echo 1.删除TUNNEL
-        echo 0.退出
-        read -p "请选择菜单(默认0): " tunneladmin
-        if [ -z "\$tunneladmin" ]
-        then
-            tunneladmin=0
-        fi
-        if [ \$tunneladmin == 1 ]
-        then
-            read -p "请输入要删除的TUNNEL NAME: " tunnelname
-            echo 断开TUNNEL \$tunnelname
-            /opt/suoha/cloudflared-linux tunnel cleanup \$tunnelname
-            echo 删除TUNNEL \$tunnelname
-            /opt/suoha/cloudflared-linux tunnel delete \$tunnelname
-        else
-            break
-        fi
-    done
-elif [ \$menu == 2 ]
-then
-    systemctl start cloudflared.service
-    systemctl start xray.service
-    clear
-elif [ \$menu == 3 ]
-then
-    systemctl stop cloudflared.service
-    systemctl stop xray.service
-    clear
-elif [ \$menu == 4 ]
-then
-    systemctl restart cloudflared.service
-    systemctl restart xray.service
-    clear
-elif [ \$menu == 5 ]
-then
-    systemctl stop cloudflared.service
-    systemctl stop xray.service
-    systemctl disable cloudflared.service
-    systemctl disable xray.service
-    kill -9 \$(ps -ef | grep xray | grep -v grep | awk '{print \$2}') >/dev/null 2>&1
-    kill -9 \$(ps -ef | grep cloudflared-linux | grep -v grep | awk '{print \$2}') >/dev/null 2>&1
-    pkill -f "http.server" >/dev/null 2>&1
-    rm -rf /opt/suoha /opt/suoha_quick /lib/systemd/system/cloudflared.service /lib/systemd/system/xray.service /usr/bin/suoha ~/.cloudflared /etc/suoha_sub_port /var/www/suoha_sub
-    systemctl --system daemon-reload
-    echo 所有服务都卸载完成
-    echo 彻底删除授权记录
-    echo 请访问 https://dash.cloudflare.com/profile/api-tokens
-    echo 删除授权的 Argo Tunnel API Token 即可
-    exit
-elif [ \$menu == 6 ]
-then
-    clear
-    cat /opt/suoha/v2ray.txt
-elif [ \$menu == 0 ]
-then
-    echo 退出成功
-    exit
-fi
-done
-EOF
-fi
-chmod +x /opt/suoha/suoha.sh
-ln -sf /opt/suoha/suoha.sh /usr/bin/suoha
-}
-
-clear
-echo "梭哈模式不需要自己提供域名,使用CF ARGO QUICK TUNNEL创建快速链接"
-echo "梭哈模式在重启或者脚本再次运行后失效,如果需要使用需要再次运行创建"
-echo "安装服务模式,需要有CF托管域名,并且需要按照提示手动绑定ARGO服务"
-echo "首次绑定ARGO服务后如果不想再次跳转网页绑定"
-echo "将已经绑定的系统目录下的 /root/.cloudflared 文件夹以及内容"
-echo "拷贝至新系统下同样的目录,会自动跳过登录验证"
-
-echo -e "\n梭哈是一种智慧!!!梭哈!梭哈!梭哈!梭哈!梭哈!梭哈!梭哈...\n"
-echo "1.梭哈模式 (自动生成 VLESS+Trojan 443 TLS 优选节点)"
-echo "2.安装服务 (自定义域名绑定固定隧道)"
-echo "3.卸载服务"
-echo "4.清空缓存"
-echo "5.额外增加ipv6 ss 共存部署"
-echo -e "0.退出脚本\n"
-read -p "请选择模式(默认1):" mode
-if [ -z "$mode" ]
-then
-    mode=1
-fi
-if [ $mode == 1 ]
-then
-    read -p "请选择argo连接模式IPV4或者IPV6(输入4或6,默认4):" ips
-    if [ -z "$ips" ]
-    then
-        ips=4
-    fi
-    if [ $ips != 4 ] && [ $ips != 6 ]
-    then
-        echo "请输入正确的argo连接模式"
-        exit
-    fi
-    isp=$(curl -$ips -s --connect-timeout 2 https://speed.cloudflare.com/meta 2>/dev/null | awk -F\" '{print $26"-"$18"-"$30}' | sed -e 's/ /_/g')
-    if [ $(grep -i PRETTY_NAME /etc/os-release | cut -d \" -f2 | awk '{print $1}') == "Alpine" ]
-    then
-        kill -9 $(ps -ef | grep xray | grep -v grep | awk '{print $1}') >/dev/null 2>&1
-        kill -9 $(ps -ef | grep cloudflared-linux | grep -v grep | awk '{print $1}') >/dev/null 2>&1
-    else
-        kill -9 $(ps -ef | grep xray | grep -v grep | awk '{print $2}') >/dev/null 2>&1
-        kill -9 $(ps -ef | grep cloudflared-linux | grep -v grep | awk '{print $2}') >/dev/null 2>&1
-    fi
-    quicktunnel
-elif [ $mode == 2 ]
-then
-    read -p "请选择argo连接模式IPV4或者IPV6(输入4或6,默认4):" ips
-    if [ -z "$ips" ]
-    then
-        ips=4
-    fi
-    if [ $ips != 4 ] && [ $ips != 6 ]
-    then
-        echo "请输入正确的argo连接模式"
-        exit
-    fi
-    isp=$(curl -$ips -s --connect-timeout 2 https://speed.cloudflare.com/meta 2>/dev/null | awk -F\" '{print $26"-"$18"-"$30}' | sed -e 's/ /_/g')
-    if [ $(grep -i PRETTY_NAME /etc/os-release | cut -d \" -f2 | awk '{print $1}') == "Alpine" ]
-    then
-        kill -9 $(ps -ef | grep xray | grep -v grep | awk '{print $1}') >/dev/null 2>&1
-        kill -9 $(ps -ef | grep cloudflared-linux | grep -v grep | awk '{print $1}') >/dev/null 2>&1
-        rm -rf /opt/suoha /lib/systemd/system/cloudflared.service /lib/systemd/system/xray.service /usr/bin/suoha
-    else
-        systemctl stop cloudflared.service
-        systemctl stop xray.service
-        systemctl disable cloudflared.service
-        systemctl disable xray.service
-        kill -9 $(ps -ef | grep xray | grep -v grep | awk '{print $2}') >/dev/null 2>&1
-        kill -9 $(ps -ef | grep cloudflared-linux | grep -v grep | awk '{print $2}') >/dev/null 2>&1
-        rm -rf /opt/suoha /lib/systemd/system/cloudflared.service /lib/systemd/system/xray.service /usr/bin/suoha
-        systemctl --system daemon-reload
-    fi
-    installtunnel
-    cat /opt/suoha/v2ray.txt
-    echo "服务安装完成,管理服务请运行命令 suoha"
-elif [ $mode == 3 ]
-then
-    if [ $(grep -i PRETTY_NAME /etc/os-release | cut -d \" -f2 | awk '{print $1}') == "Alpine" ]
-    then
-        kill -9 $(ps -ef | grep xray | grep -v grep | awk '{print $1}') >/dev/null 2>&1
-        kill -9 $(ps -ef | grep cloudflared-linux | grep -v grep | awk '{print $1}') >/dev/null 2>&1
-        pkill -f "http.server" >/dev/null 2>&1
-        rm -rf /opt/suoha /opt/suoha_quick /lib/systemd/system/cloudflared.service /lib/systemd/system/xray.service /usr/bin/suoha /etc/suoha_sub_port /var/www/suoha_sub
-    else
-        systemctl stop cloudflared.service
-        systemctl stop xray.service
-        systemctl disable cloudflared.service
-        systemctl disable xray.service
-        kill -9 $(ps -ef | grep xray | grep -v grep | awk '{print $2}') >/dev/null 2>&1
-        kill -9 $(ps -ef | grep cloudflared-linux | grep -v grep | awk '{print $2}') >/dev/null 2>&1
-        pkill -f "http.server" >/dev/null 2>&1
-        rm -rf /opt/suoha /opt/suoha_quick /lib/systemd/system/cloudflared.service /lib/systemd/system/xray.service /usr/bin/suoha ~/.cloudflared /etc/suoha_sub_port /var/www/suoha_sub
-        systemctl --system daemon-reload
-    fi
-    clear
-    echo "所有服务都卸载完成"
-    echo "彻底删除授权记录"
-    echo "请访问 https://dash.cloudflare.com/profile/api-tokens"
-    echo "删除授权的 Argo Tunnel API Token 即可"
-elif [ $mode == 4 ]
-then
-    if [ $(grep -i PRETTY_NAME /etc/os-release | cut -d \" -f2 | awk '{print $1}') == "Alpine" ]
-    then
-        kill -9 $(ps -ef | grep xray | grep -v grep | awk '{print $1}') >/dev/null 2>&1
-        kill -9 $(ps -ef | grep cloudflared-linux | grep -v grep | awk '{print $1}') >/dev/null 2>&1
-    else
-        kill -9 $(ps -ef | grep xray | grep -v grep | awk '{print $2}') >/dev/null 2>&1
-        kill -9 $(ps -ef | grep cloudflared-linux | grep -v grep | awk '{print $2}') >/dev/null 2>&1
-    fi
-    pkill -f "http.server" >/dev/null 2>&1
-    rm -rf /opt/suoha_quick/nodes.txt /opt/suoha_quick/sub.txt /opt/suoha_quick/clash.yaml
-elif [ $mode == 5 ]
-then
-    install_ipv6_ss
-else
-    echo "退出成功"
-    exit
-fi
+quicktunnel_all_in_one
