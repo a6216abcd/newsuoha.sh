@@ -1,5 +1,5 @@
 #!/bin/bash
-# onekey suoha - Full Protocol Edition (Argo VLESS/Trojan + Reality + AnyTLS + HY2 + TUIC + Snell)
+# onekey suoha - Full Protocol Edition (Argo VLESS/Trojan + Reality[Vision/XHTTP/gRPC] + AnyTLS + HY2 + TUIC + Snell)
 
 export PATH=$PATH:/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin
 
@@ -172,16 +172,16 @@ function sync_to_static_web() {
 
 function stop_all_services() {
     safe_kill_pidfile "/opt/suoha_quick/singbox.pid"
+    safe_kill_pidfile "/opt/suoha_quick/xray.pid"
     safe_kill_pidfile "/opt/suoha_quick/cf_vl.pid"
     safe_kill_pidfile "/opt/suoha_quick/cf_tr.pid"
     safe_kill_pidfile "/opt/suoha_quick/snell.pid"
-    safe_kill_pidfile "/opt/suoha_quick/snell_v6.pid"
     safe_kill_pidfile "/opt/suoha_quick/sub_http.pid"
 
     if command -v killall >/dev/null 2>&1; then
-        killall -9 sing-box cloudflared-linux snell-server snell-server-v6 >/dev/null 2>&1
+        killall -9 sing-box xray cloudflared-linux snell-server >/dev/null 2>&1
     else
-        for bin_name in sing-box cloudflared-linux snell-server snell-server-v6; do
+        for bin_name in sing-box xray cloudflared-linux snell-server; do
             for pid in $(pidof "$bin_name" 2>/dev/null); do
                 if [ "$pid" != "$$" ] && [ "$pid" != "$PPID" ]; then
                     kill -9 "$pid" >/dev/null 2>&1
@@ -218,7 +218,7 @@ fi
 function quicktunnel_all_in_one() {
     clear
     echo -e "${CYAN}==================================================================${NC}"
-    echo -e "${GREEN}   一键全协议梭哈部署启动中 (Argo + Reality + AnyTLS + HY2 + TUIC + Snell)${NC}"
+    echo -e "${GREEN}   一键全协议梭哈部署启动中 (Argo + Reality三件套 + AnyTLS + HY2 + TUIC + Snell)${NC}"
     echo -e "${CYAN}==================================================================${NC}\n"
 
     show_progress 1 "初始化运行环境并清理旧进程..."
@@ -231,27 +231,32 @@ function quicktunnel_all_in_one() {
 
     # 1. 架构识别与核心二进制下载
     local arch_sb=""
+    local arch_xray=""
     local arch_cf=""
     local arch_snell=""
 
     case "$(uname -m)" in
         x86_64 | x64 | amd64 )
             arch_sb="linux-amd64"
+            arch_xray="Xray-linux-64.zip"
             arch_cf="linux-amd64"
             arch_snell="linux-amd64"
             ;;
         i386 | i686 )
             arch_sb="linux-386"
+            arch_xray="Xray-linux-32.zip"
             arch_cf="linux-386"
             arch_snell="linux-i386"
             ;;
         armv8 | arm64 | aarch64 )
             arch_sb="linux-arm64"
+            arch_xray="Xray-linux-arm64-v8a.zip"
             arch_cf="linux-arm64"
             arch_snell="linux-aarch64"
             ;;
         armv7l )
             arch_sb="linux-armv7"
+            arch_xray="Xray-linux-arm32-v7a.zip"
             arch_cf="linux-arm"
             arch_snell="linux-armv7l"
             ;;
@@ -261,23 +266,29 @@ function quicktunnel_all_in_one() {
             ;;
     esac
 
-    show_progress 15 "正在获取最新 Sing-box 版本号..."
+    show_progress 14 "正在获取最新 Sing-box 版本号..."
     local sb_version
     sb_version=$(curl -s https://api.github.com/repos/SagerNet/sing-box/releases/latest | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
     if [ -z "$sb_version" ]; then
         sb_version="1.12.12"
     fi
 
-    show_progress 22 "正在下载 Sing-box v${sb_version} 核心..."
+    show_progress 20 "正在下载 Sing-box v${sb_version} 核心 (负责 Argo/AnyTLS/HY2/TUIC)..."
     curl -sL "https://github.com/SagerNet/sing-box/releases/download/v${sb_version}/sing-box-${sb_version}-${arch_sb}.tar.gz" -o sb.tar.gz
     tar -xzf sb.tar.gz >/dev/null 2>&1
     mv "sing-box-${sb_version}-${arch_sb}/sing-box" /opt/suoha_quick/sing-box 2>/dev/null
     rm -rf "sing-box-${sb_version}-${arch_sb}" sb.tar.gz
 
-    show_progress 34 "正在下载 Cloudflare Argo 隧道组件..."
+    show_progress 28 "正在下载最新 Xray-core 核心 (负责 Reality Vision/XHTTP/gRPC 三件套)..."
+    curl -sL "https://github.com/XTLS/Xray-core/releases/latest/download/${arch_xray}" -o xray.zip
+    mkdir -p /opt/suoha_quick/tmp_xray
+    unzip -oq xray.zip -d /opt/suoha_quick/tmp_xray >/dev/null 2>&1
+    mv /opt/suoha_quick/tmp_xray/xray /opt/suoha_quick/xray 2>/dev/null
+    rm -rf /opt/suoha_quick/tmp_xray xray.zip
+
+    show_progress 36 "正在下载 Cloudflare Argo 隧道组件..."
     curl -sL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-${arch_cf}" -o /opt/suoha_quick/cloudflared-linux
 
-    # 下载官方稳定版 Snell v4.1.1 (所有 Clash Verge / Mihomo 版本 100% 原生支持 version: 4)
     show_progress 44 "正在下载官方 Snell v4.1.1 双栈服务端..."
     curl -sL "https://dl.nssurge.com/snell/snell-server-v4.1.1-${arch_snell}.zip" -o snell.zip
     if [ -s snell.zip ] && unzip -t snell.zip >/dev/null 2>&1; then
@@ -285,15 +296,15 @@ function quicktunnel_all_in_one() {
     fi
     rm -f snell.zip
 
-    chmod +x /opt/suoha_quick/sing-box /opt/suoha_quick/cloudflared-linux 2>/dev/null
+    chmod +x /opt/suoha_quick/sing-box /opt/suoha_quick/xray /opt/suoha_quick/cloudflared-linux 2>/dev/null
     [ -f /opt/suoha_quick/snell-server ] && chmod +x /opt/suoha_quick/snell-server
 
-    if [ ! -x /opt/suoha_quick/sing-box ] || [ ! -x /opt/suoha_quick/cloudflared-linux ]; then
+    if [ ! -x /opt/suoha_quick/sing-box ] || [ ! -x /opt/suoha_quick/xray ] || [ ! -x /opt/suoha_quick/cloudflared-linux ]; then
         echo -e "\n${RED}核心文件下载失败，请检查服务器网络连接（GitHub 访问是否正常）！${NC}"
         exit 1
     fi
 
-    # 2. 生成自签名 www.bing.com 证书与 Reality 密钥
+    # 2. 生成自签名 www.bing.com 证书与 Xray Reality X25519 密钥对
     show_progress 52 "正在自签 www.bing.com TLS 证书与 Reality X25519 密钥..."
     openssl ecparam -genkey -name prime256v1 -out /opt/suoha_quick/cert/bing.key >/dev/null 2>&1
     openssl req -new -x509 -days 3650 -key /opt/suoha_quick/cert/bing.key \
@@ -302,40 +313,186 @@ function quicktunnel_all_in_one() {
         -addext "subjectAltName=DNS:www.bing.com,DNS:bing.com" >/dev/null 2>&1
 
     local reality_keys
-    reality_keys=$(/opt/suoha_quick/sing-box generate reality-keypair)
+    reality_keys=$(/opt/suoha_quick/xray x25519)
     local reality_priv
-    reality_priv=$(echo "$reality_keys" | awk '/PrivateKey:/ {print $2}')
+    reality_priv=$(echo "$reality_keys" | awk '/PrivateKey:/ {print $2} /Private key:/ {print $3}')
     local reality_pub
-    reality_pub=$(echo "$reality_keys" | awk '/PublicKey:/ {print $2}')
+    reality_pub=$(echo "$reality_keys" | awk '/Password:/ {print $2} /PublicKey:/ {print $2} /Public key:/ {print $3}')
     local reality_sid
     reality_sid=$(openssl rand -hex 8)
 
-    # 3. 分配随机端口与凭证
+    # 3. 分配随机端口与凭证 (所有 Reality 组合共用同一套 UUID / Keypair / ShortID / SNI)
     local uuid
     uuid=$(cat /proc/sys/kernel/random/uuid)
     local short_id
     short_id=$(echo "$uuid" | awk -F- '{print $1}')
     local urlpath_vless="vl-${short_id}"
     local urlpath_trojan="tr-${short_id}"
+    local xhttp_path="/xh-${short_id}"
+    local grpc_service="gr-${short_id}"
     local password_all
     password_all=$(openssl rand -hex 12)
 
     local port_argo_vl=$((RANDOM%10000+11000))
     local port_argo_tr=$((port_argo_vl+1))
-    local port_reality=$((RANDOM%10000+21000))
-    local port_anytls=$((port_reality+1))
-    local port_hy2=$((port_reality+2))
-    local port_tuic=$((port_reality+3))
-    local port_snell=$((port_reality+4))
+    local port_rel_vision=$((RANDOM%10000+21000))
+    local port_rel_xhttp=$((port_rel_vision+1))
+    local port_rel_grpc=$((port_rel_vision+2))
+    local port_anytls=$((port_rel_vision+3))
+    local port_hy2=$((port_rel_vision+4))
+    local port_tuic=$((port_rel_vision+5))
+    local port_snell=$((port_rel_vision+6))
 
-    open_firewall_port "$port_reality"
+    open_firewall_port "$port_rel_vision"
+    open_firewall_port "$port_rel_xhttp"
+    open_firewall_port "$port_rel_grpc"
     open_firewall_port "$port_anytls"
     open_firewall_port "$port_hy2"
     open_firewall_port "$port_tuic"
     open_firewall_port "$port_snell"
 
-    # 4. 生成 Sing-box 全协议统一配置文件
-    show_progress 60 "正在写入 Sing-box 全协议与 Snell 配置文件..."
+    # 4. 生成 Xray 多入站 Reality 配置文件 (方案一: RAW+Vision | 方案二: XHTTP | 方案三: gRPC)
+    show_progress 58 "正在写入 Xray Reality (Vision + XHTTP + gRPC) 三件套配置..."
+    cat > /opt/suoha_quick/xray.json <<EOF
+{
+  "log": {
+    "loglevel": "error"
+  },
+  "inbounds": [
+    {
+      "tag": "reality-vision-in",
+      "listen": "::",
+      "port": ${port_rel_vision},
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "id": "${uuid}",
+            "flow": "xtls-rprx-vision"
+          }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "raw",
+        "security": "reality",
+        "realitySettings": {
+          "show": false,
+          "target": "www.bing.com:443",
+          "xver": 0,
+          "serverNames": [
+            "www.bing.com"
+          ],
+          "privateKey": "${reality_priv}",
+          "shortIds": [
+            "${reality_sid}"
+          ]
+        }
+      },
+      "sniffing": {
+        "enabled": true,
+        "destOverride": [
+          "http",
+          "tls",
+          "quic"
+        ]
+      }
+    },
+    {
+      "tag": "reality-xhttp-in",
+      "listen": "::",
+      "port": ${port_rel_xhttp},
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "id": "${uuid}"
+          }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "xhttp",
+        "xhttpSettings": {
+          "path": "${xhttp_path}",
+          "mode": "auto"
+        },
+        "security": "reality",
+        "realitySettings": {
+          "show": false,
+          "target": "www.bing.com:443",
+          "xver": 0,
+          "serverNames": [
+            "www.bing.com"
+          ],
+          "privateKey": "${reality_priv}",
+          "shortIds": [
+            "${reality_sid}"
+          ]
+        }
+      },
+      "sniffing": {
+        "enabled": true,
+        "destOverride": [
+          "http",
+          "tls",
+          "quic"
+        ]
+      }
+    },
+    {
+      "tag": "reality-grpc-in",
+      "listen": "::",
+      "port": ${port_rel_grpc},
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "id": "${uuid}"
+          }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "grpc",
+        "grpcSettings": {
+          "serviceName": "${grpc_service}"
+        },
+        "security": "reality",
+        "realitySettings": {
+          "show": false,
+          "target": "www.bing.com:443",
+          "xver": 0,
+          "serverNames": [
+            "www.bing.com"
+          ],
+          "privateKey": "${reality_priv}",
+          "shortIds": [
+            "${reality_sid}"
+          ]
+        }
+      },
+      "sniffing": {
+        "enabled": true,
+        "destOverride": [
+          "http",
+          "tls",
+          "quic"
+        ]
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    }
+  ]
+}
+EOF
+
+    # 5. 生成 Sing-box 配置文件 (负责 Argo WS + AnyTLS + Hysteria2 + TUIC v5)
+    show_progress 62 "正在写入 Sing-box (Argo + AnyTLS + HY2 + TUIC) 配置文件..."
     cat > /opt/suoha_quick/singbox.json <<EOF
 {
   "log": {
@@ -371,33 +528,6 @@ function quicktunnel_all_in_one() {
       "transport": {
         "type": "ws",
         "path": "/${urlpath_trojan}"
-      }
-    },
-    {
-      "type": "vless",
-      "tag": "vless-reality-in",
-      "listen": "::",
-      "listen_port": ${port_reality},
-      "users": [
-        {
-          "uuid": "${uuid}",
-          "flow": "xtls-rprx-vision"
-        }
-      ],
-      "tls": {
-        "enabled": true,
-        "server_name": "www.bing.com",
-        "reality": {
-          "enabled": true,
-          "handshake": {
-            "server": "www.bing.com",
-            "server_port": 443
-          },
-          "private_key": "${reality_priv}",
-          "short_id": [
-            "${reality_sid}"
-          ]
-        }
       }
     },
     {
@@ -479,7 +609,10 @@ function quicktunnel_all_in_one() {
 }
 EOF
 
-    show_progress 66 "正在启动 Sing-box 与 Snell 核心守护进程..."
+    show_progress 66 "正在启动 Xray-core、Sing-box 与 Snell 核心守护进程..."
+    nohup /opt/suoha_quick/xray run -c /opt/suoha_quick/xray.json >/opt/suoha_quick/xray.log 2>&1 &
+    echo $! > /opt/suoha_quick/xray.pid
+
     nohup /opt/suoha_quick/sing-box run -c /opt/suoha_quick/singbox.json >/opt/suoha_quick/singbox.log 2>&1 &
     echo $! > /opt/suoha_quick/singbox.pid
 
@@ -513,7 +646,7 @@ EOF
         fi
     fi
 
-    # 5. 自动探测出口 IP 协议栈并拉起双 Argo 隧道
+    # 6. 自动探测出口 IP 协议栈并拉起双 Argo 隧道
     show_progress 70 "正在探测服务器双栈公网 IP 与机房归属..."
     local server_ip
     server_ip=$(get_server_ip)
@@ -580,7 +713,7 @@ EOF
         fi
     done
 
-    # 6. 生成全协议节点链接与 Clash / Mihomo 配置文件
+    # 7. 生成全协议节点链接与 Clash / Mihomo 配置文件
     show_progress 95 "正在生成全协议 URI 链接与 Clash/Mihomo 聚合配置..."
     > /opt/suoha_quick/nodes.txt
     > /opt/suoha_quick/surge.conf
@@ -599,7 +732,96 @@ EOF
     local opt_domains=("cf.090227.xyz" "cloudflare.182682.xyz")
     local opt_labels=("优选cf.090227" "优选182682")
 
-    # (A) VLESS Argo 节点组
+    # 确定直连连接地址
+    local direct_host=""
+    local direct_yaml_host=""
+    if [ -n "$server_ip" ]; then
+        direct_host="$server_ip"
+        direct_yaml_host="$server_ip"
+    elif [ -n "$server_ipv6" ]; then
+        direct_host="[${server_ipv6}]"
+        direct_yaml_host="$server_ipv6"
+    fi
+
+    # 优先输出 3 种 VLESS + REALITY 组合 (主力 Vision -> 现代备用 XHTTP -> 老旧兼容 gRPC)
+    local reality_summary=""
+    if [ -n "$direct_host" ]; then
+        local encoded_xhttp_path="%2Fxh-${short_id}"
+
+        # 方案一（主力首选）：VLESS + RAW (TCP) + REALITY + Vision
+        local pname_rel_vision="${node_tag}-Reality-Vision-主力"
+        local uri_rel_vision="vless://${uuid}@${direct_host}:${port_rel_vision}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.bing.com&fp=chrome&pbk=${reality_pub}&sid=${reality_sid}&type=tcp&headerType=none#${pname_rel_vision}"
+        echo "$uri_rel_vision" >> /opt/suoha_quick/nodes.txt
+        proxy_names+=("$pname_rel_vision")
+        reality_summary+="[1. 主力首选 - TCP+Vision]\n${uri_rel_vision}\n\n"
+        cat >> /opt/suoha_quick/clash.yaml <<EOF
+  - name: "${pname_rel_vision}"
+    type: vless
+    server: ${direct_yaml_host}
+    port: ${port_rel_vision}
+    uuid: ${uuid}
+    network: tcp
+    tls: true
+    udp: true
+    flow: xtls-rprx-vision
+    servername: www.bing.com
+    reality-opts:
+      public-key: ${reality_pub}
+      short-id: ${reality_sid}
+    client-fingerprint: chrome
+EOF
+
+        # 方案二（现代备用）：VLESS + XHTTP + REALITY
+        local pname_rel_xhttp="${node_tag}-Reality-XHTTP-备用"
+        local uri_rel_xhttp="vless://${uuid}@${direct_host}:${port_rel_xhttp}?encryption=none&security=reality&sni=www.bing.com&fp=chrome&pbk=${reality_pub}&sid=${reality_sid}&type=xhttp&path=${encoded_xhttp_path}&mode=auto#${pname_rel_xhttp}"
+        echo "$uri_rel_xhttp" >> /opt/suoha_quick/nodes.txt
+        proxy_names+=("$pname_rel_xhttp")
+        reality_summary+="[2. 现代备用 - XHTTP抗QoS]\n${uri_rel_xhttp}\n\n"
+        cat >> /opt/suoha_quick/clash.yaml <<EOF
+  - name: "${pname_rel_xhttp}"
+    type: vless
+    server: ${direct_yaml_host}
+    port: ${port_rel_xhttp}
+    uuid: ${uuid}
+    network: xhttp
+    tls: true
+    udp: true
+    servername: www.bing.com
+    xhttp-opts:
+      path: ${xhttp_path}
+      mode: auto
+    reality-opts:
+      public-key: ${reality_pub}
+      short-id: ${reality_sid}
+    client-fingerprint: chrome
+EOF
+
+        # 方案三（老旧兼容/中转兜底）：VLESS + gRPC + REALITY
+        local pname_rel_grpc="${node_tag}-Reality-gRPC-兼容"
+        local uri_rel_grpc="vless://${uuid}@${direct_host}:${port_rel_grpc}?encryption=none&security=reality&sni=www.bing.com&fp=chrome&pbk=${reality_pub}&sid=${reality_sid}&type=grpc&serviceName=${grpc_service}&mode=gun#${pname_rel_grpc}"
+        echo "$uri_rel_grpc" >> /opt/suoha_quick/nodes.txt
+        proxy_names+=("$pname_rel_grpc")
+        reality_summary+="[3. 兼容兜底 - gRPC中转]\n${uri_rel_grpc}\n"
+        cat >> /opt/suoha_quick/clash.yaml <<EOF
+  - name: "${pname_rel_grpc}"
+    type: vless
+    server: ${direct_yaml_host}
+    port: ${port_rel_grpc}
+    uuid: ${uuid}
+    network: grpc
+    tls: true
+    udp: true
+    servername: www.bing.com
+    grpc-opts:
+      grpc-service-name: ${grpc_service}
+    reality-opts:
+      public-key: ${reality_pub}
+      short-id: ${reality_sid}
+    client-fingerprint: chrome
+EOF
+    fi
+
+    # (B) VLESS Argo 节点组
     local vless_domains=("$argo_vl" "${opt_domains[@]}")
     local vless_labels=("默认Argo" "${opt_labels[@]}")
     for idx in "${!vless_domains[@]}"; do
@@ -626,7 +848,7 @@ EOF
 EOF
     done
 
-    # (B) Trojan Argo 节点组
+    # (C) Trojan Argo 节点组
     local trojan_domains=("$argo_tr" "${opt_domains[@]}")
     local trojan_labels=("默认Argo" "${opt_labels[@]}")
     for idx in "${!trojan_domains[@]}"; do
@@ -651,39 +873,7 @@ EOF
 EOF
     done
 
-    # 确定直连连接地址
-    local direct_host=""
-    local direct_yaml_host=""
-    if [ -n "$server_ip" ]; then
-        direct_host="$server_ip"
-        direct_yaml_host="$server_ip"
-    elif [ -n "$server_ipv6" ]; then
-        direct_host="[${server_ipv6}]"
-        direct_yaml_host="$server_ipv6"
-    fi
-
     if [ -n "$direct_host" ]; then
-        # (C) VLESS Reality Vision 直连节点
-        local pname_rel="${node_tag}-VLESS-Reality"
-        echo "vless://${uuid}@${direct_host}:${port_reality}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.bing.com&fp=chrome&pbk=${reality_pub}&sid=${reality_sid}&type=tcp&headerType=none#${pname_rel}" >> /opt/suoha_quick/nodes.txt
-        proxy_names+=("$pname_rel")
-        cat >> /opt/suoha_quick/clash.yaml <<EOF
-  - name: "${pname_rel}"
-    type: vless
-    server: ${direct_yaml_host}
-    port: ${port_reality}
-    uuid: ${uuid}
-    network: tcp
-    tls: true
-    udp: true
-    flow: xtls-rprx-vision
-    servername: www.bing.com
-    reality-opts:
-      public-key: ${reality_pub}
-      short-id: ${reality_sid}
-    client-fingerprint: chrome
-EOF
-
         # (D) AnyTLS 直连节点 (自签 www.bing.com)
         local pname_any="${node_tag}-AnyTLS-Bing"
         echo "anytls://${password_all}@${direct_host}:${port_anytls}?sni=www.bing.com&insecure=1#${pname_any}" >> /opt/suoha_quick/nodes.txt
@@ -738,7 +928,7 @@ EOF
 EOF
     fi
 
-    # (G) Snell 节点 (固定使用 version: 4 保证 Clash Verge Rev 100% 零报错导入)
+    # (G) Snell 双栈节点
     local snell_display_lines=""
     if [ $snell_installed -eq 1 ]; then
         if [ -n "$server_ip" ]; then
@@ -817,17 +1007,15 @@ EOF
     local clash_online_url="http://${sub_host}:${sub_port}/clash.yaml"
 
     cat > /opt/suoha_quick/v2ray.txt <<EOF
-======================== 一键全协议梭哈节点列表 ========================
-[URI 通用节点链接 (VLESS-Argo / Trojan-Argo / Reality / AnyTLS / HY2 / TUIC)]
+======================== VLESS + REALITY 三件套组合 ========================
+共用参数 -> UUID: ${uuid} | SNI: www.bing.com | PublicKey: ${reality_pub} | ShortID: ${reality_sid}
+
+$(echo -e "${reality_summary:-未检测到可用公网 IP，跳过 Reality 直连生成}")
+======================== 全协议节点汇总 (含 Argo / AnyTLS / HY2 / TUIC) ========================
 $(cat /opt/suoha_quick/nodes.txt)
 
-[Snell 专属配置 (Surge / Clash Verge / Mihomo) | 状态: ${snell_status}]
+[Snell 双栈配置 (Surge / Clash Verge / Mihomo) | 状态: ${snell_status}]
 $(echo -e "${snell_display_lines:-未检测到可用公网 IP，跳过 Snell 生成}")
-======================== 端口与证书说明 ========================
-- Argo 节点 443 端口可按需替换为 CF 其它 TLS 端口: 2053, 2083, 2087, 2096, 8443
-- AnyTLS / Hysteria2 / TUIC 均已自动签发 www.bing.com 证书 (客户端需开启跳过证书验证)
-- VLESS Reality 伪装域名: www.bing.com | PublicKey: ${reality_pub} | ShortID: ${reality_sid}
-
 ======================== 客户端订阅及导入链接 ========================
 本机固定订阅服务端口: ${sub_port} (已永久保存，重新梭哈无需重新导入客户端)
 
@@ -840,14 +1028,14 @@ sub://${sub_online_url}
 3. Clash Verge Rev / Mihomo 一键导入配置:
 clash://install-config?url=${clash_online_url}
 
-4. Clash / Mihomo 在线 YAML 直链:
+4. Clash / Mihomo 在线 YAML 直链 (含 Reality 三件套 + 全协议):
 ${clash_online_url}
 
 快捷卸载命令: bash $(readlink -f "$0" 2>/dev/null || echo "$0") uninstall
 =====================================================================
 EOF
 
-    show_progress 100 "全部协议部署完成！"
+    show_progress 100 "全部协议及 Reality 三件套部署完成！"
     sleep 0.6
     clear
     cat /opt/suoha_quick/v2ray.txt
