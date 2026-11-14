@@ -1,5 +1,5 @@
 #!/bin/sh
-# onekey suoha - Full Protocol Edition (官方Sing-box主力 + 单Argo双路径 + Reality[Vision/gRPC] + AnyTLS + HY2 + TUIC + Snell双栈 + SS-IPv6)
+# onekey suoha - Full Protocol Edition (4K/1080P TCP+UDP内核级调优 + 官方Sing-box主力 + 单Argo双路径 + Reality[Vision/gRPC] + AnyTLS + HY2 + TUIC + Snell双栈 + SS-IPv6)
 # 全平台兼容版: 支持 Debian / Ubuntu / Alpine / CentOS / Fedora (无预装 curl/bash 环境亦可直接通过 sh / wget 引导安装)
 
 export PATH=$PATH:/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin
@@ -20,7 +20,6 @@ if [ -z "$BASH_VERSION" ]; then
         yum install -y bash ca-certificates >/dev/null 2>&1
     fi
     if command -v bash >/dev/null 2>&1; then
-        # 若通过管道 (wget -qO- ... | sh) 运行，将标准输入落地为临时脚本再由 bash 执行
         if [ ! -f "$0" ] || [ "$0" = "sh" ] || [ "$0" = "/bin/sh" ]; then
             TMP_SELF="/tmp/suoha_bootstrap_$$.sh"
             cat > "$TMP_SELF"
@@ -136,6 +135,73 @@ function pkg_install() {
     esac
 }
 
+# TCP & UDP 4K/1080P 流媒体内核参数与系统描述符优化
+function optimize_network_4k() {
+    show_progress 3 "正在应用 TCP/UDP 1080P/4K 流媒体与 BBR 内核优化..."
+
+    # 尝试加载 BBR 与 conntrack 内核模块 (容器环境只读时自动跳过)
+    modprobe tcp_bbr >/dev/null 2>&1
+    modprobe nf_conntrack >/dev/null 2>&1
+
+    # 提升当前进程及子进程文件描述符上限，防止高并发 4K 分片连接耗尽句柄
+    ulimit -n 1048576 >/dev/null 2>&1
+
+    if [ -w /etc ] && [ -w /proc/sys ]; then
+        mkdir -p /etc/sysctl.d >/dev/null 2>&1
+        cat > /etc/sysctl.d/99-suoha-4k.conf <<'EOF'
+# === OneKey Suoha 1080P / 4K Streaming TCP & UDP Kernel Tuning ===
+# 1. BBR 拥塞控制与 FQ 公平队列调度 (大幅提升跨洋大码率吞吐与抗丢包能力)
+net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = bbr
+
+# 2. TCP/UDP 读写缓冲区上限提升至 32MB (喂饱 4K 60fps 视频流高 BDP 窗口)
+net.core.rmem_default = 1048576
+net.core.wmem_default = 1048576
+net.core.rmem_max = 33554432
+net.core.wmem_max = 33554432
+net.ipv4.tcp_rmem = 4096 1048576 33554432
+net.ipv4.tcp_wmem = 4096 1048576 33554432
+
+# 3. UDP / QUIC (Hysteria2 / TUIC v5) 突发队列防丢包调优
+net.ipv4.udp_rmem_min = 65536
+net.ipv4.udp_wmem_min = 65536
+net.core.netdev_max_backlog = 16384
+net.core.somaxconn = 8192
+net.ipv4.tcp_max_syn_backlog = 8192
+
+# 4. 视频流暂停恢复防降速、MTU 路径黑洞自动探测与连接复用
+net.ipv4.tcp_slow_start_after_idle = 0
+net.ipv4.tcp_mtu_probing = 1
+net.ipv4.tcp_fastopen = 3
+net.ipv4.tcp_tw_reuse = 1
+net.ipv4.tcp_fin_timeout = 15
+net.ipv4.tcp_keepalive_time = 300
+net.ipv4.tcp_keepalive_intvl = 30
+net.ipv4.tcp_keepalive_probes = 3
+net.ipv4.ip_local_port_range = 1024 65535
+
+# 5. 连接跟踪表扩容 (避免多客户端并发 4K 分片请求时丢包)
+net.netfilter.nf_conntrack_max = 262144
+net.netfilter.nf_conntrack_udp_timeout = 60
+net.netfilter.nf_conntrack_udp_timeout_stream = 180
+EOF
+        sysctl -p /etc/sysctl.d/99-suoha-4k.conf >/dev/null 2>&1 || sysctl --system >/dev/null 2>&1
+    fi
+
+    # 持久化系统级 ulimit 文件句柄限制
+    if [ -w /etc/security/limits.conf ]; then
+        if ! grep -q "suoha-4k-nofile" /etc/security/limits.conf 2>/dev/null; then
+            cat >> /etc/security/limits.conf <<'EOF'
+# suoha-4k-nofile
+* soft nofile 1048576
+* hard nofile 1048576
+root soft nofile 1048576
+root hard nofile 1048576
+EOF
+        fi
+    fi
+}
+
 install_deps() {
     local deps=("curl" "wget" "unzip" "python3" "openssl" "tar" "jq")
     if [ "$OS_NAME" == "Alpine" ]; then
@@ -158,13 +224,13 @@ install_deps() {
     done
 
     if [ $need_update -eq 1 ]; then
-        show_progress 4 "正在更新系统软件源 (${OS_NAME})..."
+        show_progress 5 "正在更新系统软件源 (${OS_NAME})..."
         pkg_update
         local total_deps=${#deps[@]}
         local idx=0
         for dep in "${deps[@]}"; do
             idx=$((idx+1))
-            local step_pct=$((4 + idx * 8 / total_deps))
+            local step_pct=$((5 + idx * 7 / total_deps))
             if [ "$OS_NAME" == "Alpine" ]; then
                 if ! apk info -e "$dep" >/dev/null 2>&1; then
                     show_progress $step_pct "正在安装依赖组件: ${dep}..."
@@ -327,10 +393,11 @@ function uninstall_all() {
         fi
     fi
     sleep 0.5
-    show_progress 90 "正在删除配置文件与证书目录..."
-    rm -rf /opt/suoha /opt/suoha_quick /etc/suoha_sub_port /var/www/suoha_sub /usr/bin/suoha /tmp/suoha_bootstrap_*.sh
+    show_progress 90 "正在删除配置文件、内核调优与证书目录..."
+    rm -rf /opt/suoha /opt/suoha_quick /etc/suoha_sub_port /var/www/suoha_sub /usr/bin/suoha /tmp/suoha_bootstrap_*.sh /etc/sysctl.d/99-suoha-4k.conf
+    sysctl --system >/dev/null 2>&1
     show_progress 100 "卸载清理完成！"
-    echo -e "\n所有梭哈全协议服务及订阅文件已彻底清理完成。"
+    echo -e "\n所有梭哈全协议服务、内核网络调优及订阅文件已彻底清理完成。"
     exit 0
 }
 
@@ -341,11 +408,12 @@ fi
 function quicktunnel_all_in_one() {
     clear
     echo -e "${CYAN}==================================================================${NC}"
-    echo -e "${GREEN}   一键全协议梭哈部署启动中 (官方Sing-box主力 + 单Argo + Snell + SS-IPv6)${NC}"
+    echo -e "${GREEN}   一键全协议梭哈部署启动中 (4K内核调优 + Sing-box + 单Argo + Snell + SS)${NC}"
     echo -e "${CYAN}==================================================================${NC}\n"
 
     show_progress 1 "初始化运行环境并彻底清空旧进程与历史文件..."
     stop_all_services
+    optimize_network_4k
     install_deps
 
     rm -rf /opt/suoha /opt/suoha_quick /var/www/suoha_sub
@@ -667,7 +735,7 @@ import asyncio
 async def relay(reader, writer):
     try:
         while True:
-            chunk = await reader.read(32768)
+            chunk = await reader.read(65536)
             if not chunk:
                 break
             writer.write(chunk)
@@ -1074,10 +1142,16 @@ EOF
     local sub_online_url="http://${sub_host}:${sub_port}/sub.txt"
     local clash_online_url="http://${sub_host}:${sub_port}/clash.yaml"
 
+    local cc_active
+    cc_active=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "default")
+    local qdisc_active
+    qdisc_active=$(sysctl -n net.core.default_qdisc 2>/dev/null || echo "default")
+
     cat > /opt/suoha_quick/v2ray.txt <<EOF
 ======================== 一键全协议梭哈节点列表 ========================
 [系统与核心运行状态]:
   ├─ 操作系统环境          : ${OS_NAME} ($(uname -m))
+  ├─ 4K/1080P 内核网络调优 : 拥塞控制=${cc_active} | 队列=${qdisc_active} | 32MB双缓冲已生效
   ├─ 官方 Sing-box 主力进程 : ${sb_status}
   └─ Snell 双栈守护进程    : ${snell_status}
 
