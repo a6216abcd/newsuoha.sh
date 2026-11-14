@@ -1,6 +1,6 @@
-# New-Suoha: 全协议一键梭哈部署脚本 (Sing-box 主力 + 单 Argo 双路径 + Snell + SS-IPv6)
+# New-Suoha: 全协议一键梭哈部署脚本 (4K内核调优 + Sing-box主力 + 单Argo双路径 + Snell + SS-IPv6)
 
-轻量、极速、零交互、开箱即用的全协议代理一键部署脚本。基于 **官方原版 Sing-box 核心** 与 **Cloudflare Argo 临时隧道**，结合轻量级异步路由分发器与 **Snell v4** 官方服务端，一条命令即可在主流 Linux VPS 上全自动部署 **9 种主流直连与 CDN 隧道协议**。内置**永久固定订阅端口**托管服务，支持订阅无缝刷新及主流客户端一键导入。
+轻量、极速、零交互、开箱即用的全协议代理一键部署脚本。在部署代理节点前自动应用 **1080P / 4K 高码率视频流媒体 TCP & UDP 内核级网络调优**，并基于 **官方原版 Sing-box 核心** 与 **Cloudflare Argo 临时隧道**，结合轻量级异步路由分发器与 **Snell v4** 官方服务端，一条命令即可在主流 Linux VPS 上全自动部署 **9 种主流直连与 CDN 隧道协议**。内置**永久固定订阅端口**托管服务，支持订阅无缝刷新及主流客户端一键导入。
 
 ---
 
@@ -18,11 +18,17 @@
 
 ## 核心特性
 
+- **前置 1080P / 4K 视频流媒体 TCP & UDP 内核级调优**：
+  - 部署前自动写入 `/etc/sysctl.d/99-suoha-4k.conf` 并即时生效（卸载时自动清理）；
+  - 强制开启 **BBR 拥塞控制 + FQ 公平队列调度**，显著提升跨洋高延迟链路的大码率吞吐与抗丢包能力；
+  - **内存自适应读写缓冲窗口**：自动识别 VPS 物理内存（`< 512MB` 机型启用 `8MB` 安全缓冲防 OOM，`≥ 512MB` 机型启用 `32MB` 大窗口缓冲），充分喂饱 4K 60fps 视频流的高 BDP 窗口；
+  - 针对 **UDP / QUIC**（Hysteria2 / TUIC v5）增大收发队列与 `netdev_max_backlog` 防止突发丢包，关闭 `tcp_slow_start_after_idle` 避免视频暂停恢复播放时降速，开启 `tcp_mtu_probing` 自动规避路由黑洞分片。
+
 - **多架构与多系统适配**：原生支持 `x86_64`、`arm64`、`armv7l`、`i386` 架构；全面适配 Debian、Ubuntu、CentOS、Fedora 及 Alpine Linux。
 
 - **全自动零交互部署**：无需手动输入参数或准备自有域名，脚本自动探测公网 IPv4 / IPv6 双栈环境、自动签发 `www.bing.com` 自签名 TLS 证书与 Reality X25519 密钥对，并自动放行系统防火墙 (`ufw` / `firewalld` / `iptables` / `ip6tables`)。
 
-- **单 Argo 隧道双路径复用**：通过内置的轻量级 Python `asyncio` 本地分流守护进程，仅申请一条 `*.trycloudflare.com` 临时隧道即可按路径同时分发 **VLESS-WS** (`/vl-xxx`) 与 **Trojan-WS** (`/tr-xxx`) 双协议；内置 HTTP/2 与 QUIC 超时自动切换重连机制，并矩阵式生成 **3 组优选域名**（`默认 Argo 域名`、`cf.090227.xyz`、`cloudflare.182682.xyz`）的 443 TLS 节点。
+- **单 Argo 隧道双路径复用**：通过内置的轻量级 Python `asyncio` 本地分流守护进程（`64KB` 高速转发缓冲），仅申请一条 `*.trycloudflare.com` 临时隧道即可按路径同时分发 **VLESS-WS** (`/vl-xxx`) 与 **Trojan-WS** (`/tr-xxx`) 双协议；内置 HTTP/2 与 QUIC 超时自动切换重连机制，并矩阵式生成 **3 组优选域名**（`默认 Argo 域名`、`cf.090227.xyz`、`cloudflare.182682.xyz`）的 443 TLS 节点。
 
 - **全主流直连协议矩阵并发**：在单一官方 Sing-box 进程内原生并发监听以下直连抗封锁与高速协议，同时拉起原生 Snell v4 双栈守护进程：
   - **VLESS-Reality-Vision** (`xtls-rprx-vision` + `www.bing.com` 伪装，主力首选)
@@ -42,7 +48,7 @@
 
 ## 一键运行命令
 
-登录 VPS 终端（支持 root 用户），执行以下命令即可全自动完成部署：
+登录 VPS 终端（支持 root 用户），执行以下命令即可全自动完成网络内核优化与全协议部署：
 
 ```bash
 bash -c "$(curl -fsSL [https://raw.githubusercontent.com/a6216abcd/newsuoha.sh/refs/heads/main/suoha.sh](https://raw.githubusercontent.com/a6216abcd/newsuoha.sh/refs/heads/main/suoha.sh))"
