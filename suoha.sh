@@ -1,7 +1,36 @@
-#!/bin/bash
+#!/bin/sh
 # onekey suoha - Full Protocol Edition (官方Sing-box主力 + 单Argo双路径 + Reality[Vision/gRPC] + AnyTLS + HY2 + TUIC + Snell双栈 + SS-IPv6)
+# 全平台兼容版: 支持 Debian / Ubuntu / Alpine / CentOS / Fedora (无预装 curl/bash 环境亦可直接通过 sh / wget 引导安装)
 
 export PATH=$PATH:/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin
+
+# 若当前以纯 /bin/sh (如精简版 Alpine) 引导执行，自动检测/安装 bash 后无缝接管运行
+if [ -z "$BASH_VERSION" ]; then
+    if command -v bash >/dev/null 2>&1; then
+        exec bash "$0" "$@"
+    fi
+    if [ -f /etc/alpine-release ] && command -v apk >/dev/null 2>&1; then
+        echo "[初始化] 检测到精简版 Alpine 环境，正在自动补全 bash 与基础证书组件..."
+        apk update >/dev/null 2>&1
+        apk add --no-cache bash ca-certificates >/dev/null 2>&1
+    elif command -v apt-get >/dev/null 2>&1; then
+        apt-get update >/dev/null 2>&1
+        apt-get install -y bash ca-certificates >/dev/null 2>&1
+    elif command -v yum >/dev/null 2>&1; then
+        yum install -y bash ca-certificates >/dev/null 2>&1
+    fi
+    if command -v bash >/dev/null 2>&1; then
+        # 若通过管道 (wget -qO- ... | sh) 运行，将标准输入落地为临时脚本再由 bash 执行
+        if [ ! -f "$0" ] || [ "$0" = "sh" ] || [ "$0" = "/bin/sh" ]; then
+            TMP_SELF="/tmp/suoha_bootstrap_$$.sh"
+            cat > "$TMP_SELF"
+            chmod +x "$TMP_SELF"
+            exec bash "$TMP_SELF" "$@"
+        else
+            exec bash "$0" "$@"
+        fi
+    fi
+fi
 
 ACTION="${1:-install}"
 
@@ -30,76 +59,159 @@ function show_progress() {
     printf "\r\033[K${CYAN}[${GREEN}${bar_filled}${NC}${bar_empty}${CYAN}] ${YELLOW}%3d%%${NC} - %s" "$pct" "$msg"
 }
 
-linux_os=("Debian" "Ubuntu" "CentOS" "Fedora" "Alpine")
-linux_update=("apt update" "apt update" "yum -y update" "yum -y update" "apk update")
-linux_install=("apt -y install" "apt -y install" "yum -y install" "yum -y install" "apk add -f")
-n=0
-OS_NAME=$(grep -i PRETTY_NAME /etc/os-release 2>/dev/null | cut -d \" -f2 | awk '{print $1}')
-
-for i in "${linux_os[@]}"; do
-    if [ "$i" == "$OS_NAME" ]; then
-        break
-    else
-        n=$((n+1))
+# 通用 HTTP 下载封装 (优先 curl，无 curl 时自动回退 wget，兼容 BusyBox wget)
+function fetch_stdout() {
+    local url="$1"
+    local ip_ver="$2"
+    local timeout="${3:-5}"
+    if command -v curl >/dev/null 2>&1; then
+        if [ "$ip_ver" = "4" ]; then
+            curl -s4L --connect-timeout "$timeout" "$url" 2>/dev/null
+        elif [ "$ip_ver" = "6" ]; then
+            curl -s6L --connect-timeout "$timeout" "$url" 2>/dev/null
+        else
+            curl -sL --connect-timeout "$timeout" "$url" 2>/dev/null
+        fi
+    elif command -v wget >/dev/null 2>&1; then
+        if wget --help 2>&1 | grep -q -- '--inet4-only'; then
+            if [ "$ip_ver" = "4" ]; then
+                wget -qO- -4 -T "$timeout" "$url" 2>/dev/null
+            elif [ "$ip_ver" = "6" ]; then
+                wget -qO- -6 -T "$timeout" "$url" 2>/dev/null
+            else
+                wget -qO- -T "$timeout" "$url" 2>/dev/null
+            fi
+        else
+            wget -qO- -T "$timeout" "$url" 2>/dev/null
+        fi
     fi
-done
+}
 
-if [ $n -eq 5 ]; then
-    n=0
+function fetch_file() {
+    local url="$1"
+    local out_path="$2"
+    if command -v curl >/dev/null 2>&1; then
+        curl -sL --connect-timeout 15 "$url" -o "$out_path" 2>/dev/null
+    elif command -v wget >/dev/null 2>&1; then
+        wget -q -T 15 "$url" -O "$out_path" 2>/dev/null
+    fi
+}
+
+# 精准识别发行版 (支持 Debian / Ubuntu / Alpine / CentOS / Fedora)
+PKG_MANAGER="apt"
+OS_NAME="Debian"
+if [ -f /etc/alpine-release ] || grep -qi "alpine" /etc/os-release 2>/dev/null; then
+    OS_NAME="Alpine"
+    PKG_MANAGER="apk"
+elif grep -qi "ubuntu" /etc/os-release 2>/dev/null; then
+    OS_NAME="Ubuntu"
+    PKG_MANAGER="apt"
+elif grep -qi "debian" /etc/os-release 2>/dev/null; then
+    OS_NAME="Debian"
+    PKG_MANAGER="apt"
+elif grep -qi "fedora" /etc/os-release 2>/dev/null; then
+    OS_NAME="Fedora"
+    PKG_MANAGER="dnf"
+elif grep -qiE "centos|rhel|rocky|almalinux" /etc/os-release 2>/dev/null; then
+    OS_NAME="CentOS"
+    PKG_MANAGER="yum"
 fi
 
+function pkg_update() {
+    case "$PKG_MANAGER" in
+        apk) apk update >/dev/null 2>&1 ;;
+        apt) apt-get update >/dev/null 2>&1 || apt update >/dev/null 2>&1 ;;
+        dnf) dnf makecache >/dev/null 2>&1 ;;
+        yum) yum makecache >/dev/null 2>&1 ;;
+    esac
+}
+
+function pkg_install() {
+    local pkg="$1"
+    case "$PKG_MANAGER" in
+        apk) apk add --no-cache "$pkg" >/dev/null 2>&1 ;;
+        apt) DEBIAN_FRONTEND=noninteractive apt-get -y install "$pkg" >/dev/null 2>&1 || apt -y install "$pkg" >/dev/null 2>&1 ;;
+        dnf) dnf -y install "$pkg" >/dev/null 2>&1 ;;
+        yum) yum -y install "$pkg" >/dev/null 2>&1 ;;
+    esac
+}
+
 install_deps() {
-    local deps=("unzip" "curl" "python3" "openssl" "tar" "jq")
+    local deps=("curl" "wget" "unzip" "python3" "openssl" "tar" "jq")
+    if [ "$OS_NAME" == "Alpine" ]; then
+        deps=("curl" "wget" "unzip" "python3" "openssl" "tar" "jq" "ca-certificates" "gcompat" "libc6-compat" "iproute2" "coreutils")
+    fi
+
     local need_update=0
     for dep in "${deps[@]}"; do
-        if [ -z "$(type -P "$dep")" ]; then
-            need_update=1
-            break
+        if [ "$OS_NAME" == "Alpine" ]; then
+            if ! apk info -e "$dep" >/dev/null 2>&1 && [ -z "$(type -P "$dep" 2>/dev/null)" ]; then
+                need_update=1
+                break
+            fi
+        else
+            if [ -z "$(type -P "$dep" 2>/dev/null)" ]; then
+                need_update=1
+                break
+            fi
         fi
     done
 
     if [ $need_update -eq 1 ]; then
-        show_progress 4 "正在更新系统软件源..."
-        ${linux_update[$n]} >/dev/null 2>&1
+        show_progress 4 "正在更新系统软件源 (${OS_NAME})..."
+        pkg_update
         local total_deps=${#deps[@]}
         local idx=0
         for dep in "${deps[@]}"; do
             idx=$((idx+1))
             local step_pct=$((4 + idx * 8 / total_deps))
-            if [ -z "$(type -P "$dep")" ]; then
-                show_progress $step_pct "正在安装依赖组件: ${dep}..."
-                ${linux_install[$n]} "$dep" >/dev/null 2>&1
+            if [ "$OS_NAME" == "Alpine" ]; then
+                if ! apk info -e "$dep" >/dev/null 2>&1; then
+                    show_progress $step_pct "正在安装依赖组件: ${dep}..."
+                    pkg_install "$dep"
+                fi
+            else
+                if [ -z "$(type -P "$dep" 2>/dev/null)" ]; then
+                    show_progress $step_pct "正在安装依赖组件: ${dep}..."
+                    pkg_install "$dep"
+                fi
             fi
         done
     fi
-    show_progress 12 "系统基础依赖检查完成"
+    show_progress 12 "系统基础依赖检查完成 (${OS_NAME})"
 }
 
 function get_server_ip() {
     local ip=""
-    ip=$(ip route get 1.1.1.1 2>/dev/null | awk '{print $7; exit}')
+    if command -v ip >/dev/null 2>&1; then
+        ip=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1); exit}')
+    fi
     if [[ -z "$ip" || "$ip" =~ ^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.) ]]; then
-        ip=$(curl -s4 --connect-timeout 3 https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null | awk -F= '/ip/{print $2}')
+        ip=$(fetch_stdout "https://www.cloudflare.com/cdn-cgi/trace" "4" 3 | awk -F= '/^ip=/{print $2}' | tr -d '\n\r ')
     fi
     if [ -z "$ip" ]; then
-        ip=$(curl -s4 --connect-timeout 3 https://ipv4.icanhazip.com 2>/dev/null | tr -d '\n\r ')
+        ip=$(fetch_stdout "https://ipv4.icanhazip.com" "4" 3 | tr -d '\n\r ')
     fi
     if [ -z "$ip" ]; then
-        ip=$(curl -s4 --connect-timeout 3 https://api.ip.sb/ip 2>/dev/null | tr -d '\n\r ')
+        ip=$(fetch_stdout "https://api.ip.sb/ip" "4" 3 | tr -d '\n\r ')
     fi
     echo "$ip"
 }
 
 function get_server_ipv6() {
     local ip6=""
-    ip6=$(curl -s6 --connect-timeout 3 https://api64.ipify.org 2>/dev/null | tr -d '\n\r ')
-    if [ -z "$ip6" ]; then
-        ip6=$(curl -s6 --connect-timeout 3 https://ipv6.icanhazip.com 2>/dev/null | tr -d '\n\r ')
+    ip6=$(fetch_stdout "https://api64.ipify.org" "6" 3 | tr -d '\n\r ')
+    if [[ -z "$ip6" || "$ip6" != *":"* ]]; then
+        ip6=$(fetch_stdout "https://ipv6.icanhazip.com" "6" 3 | tr -d '\n\r ')
     fi
-    if [ -z "$ip6" ]; then
+    if [[ -z "$ip6" || "$ip6" != *":"* ]] && command -v ip >/dev/null 2>&1; then
         ip6=$(ip -6 addr show scope global 2>/dev/null | grep inet6 | awk '{print $2}' | cut -d/ -f1 | head -n 1 | tr -d '\n\r ')
     fi
-    echo "$ip6"
+    if [[ "$ip6" == *":"* ]]; then
+        echo "$ip6"
+    else
+        echo ""
+    fi
 }
 
 function open_firewall_port() {
@@ -216,7 +328,7 @@ function uninstall_all() {
     fi
     sleep 0.5
     show_progress 90 "正在删除配置文件与证书目录..."
-    rm -rf /opt/suoha /opt/suoha_quick /etc/suoha_sub_port /var/www/suoha_sub /usr/bin/suoha
+    rm -rf /opt/suoha /opt/suoha_quick /etc/suoha_sub_port /var/www/suoha_sub /usr/bin/suoha /tmp/suoha_bootstrap_*.sh
     show_progress 100 "卸载清理完成！"
     echo -e "\n所有梭哈全协议服务及订阅文件已彻底清理完成。"
     exit 0
@@ -274,22 +386,22 @@ function quicktunnel_all_in_one() {
 
     show_progress 15 "正在获取官方 Sing-box 稳定版核心..."
     local sb_version
-    sb_version=$(curl -s https://api.github.com/repos/SagerNet/sing-box/releases/latest | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
+    sb_version=$(fetch_stdout "https://api.github.com/repos/SagerNet/sing-box/releases/latest" "" 8 | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
     if [ -z "$sb_version" ]; then
         sb_version="1.12.12"
     fi
 
     show_progress 22 "正在下载官方 Sing-box v${sb_version} 主力核心..."
-    curl -sL "https://github.com/SagerNet/sing-box/releases/download/v${sb_version}/sing-box-${sb_version}-${arch_sb}.tar.gz" -o sb.tar.gz
+    fetch_file "https://github.com/SagerNet/sing-box/releases/download/v${sb_version}/sing-box-${sb_version}-${arch_sb}.tar.gz" "sb.tar.gz"
     tar -xzf sb.tar.gz >/dev/null 2>&1
     mv "sing-box-${sb_version}-${arch_sb}/sing-box" /opt/suoha_quick/sing-box 2>/dev/null
     rm -rf "sing-box-${sb_version}-${arch_sb}" sb.tar.gz
 
     show_progress 34 "正在下载 Cloudflare Argo 隧道组件..."
-    curl -sL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-${arch_cf}" -o /opt/suoha_quick/cloudflared-linux
+    fetch_file "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-${arch_cf}" "/opt/suoha_quick/cloudflared-linux"
 
     show_progress 44 "正在下载官方 Snell v4.1.1 双栈服务端..."
-    curl -sL "https://dl.nssurge.com/snell/snell-server-v4.1.1-${arch_snell}.zip" -o snell.zip
+    fetch_file "https://dl.nssurge.com/snell/snell-server-v4.1.1-${arch_snell}.zip" "snell.zip"
     if [ -s snell.zip ] && unzip -t snell.zip >/dev/null 2>&1; then
         unzip -oq snell.zip -d /opt/suoha_quick/ >/dev/null 2>&1
     fi
@@ -645,7 +757,7 @@ EOF
     fi
 
     local isp
-    isp=$(curl -${ips} -s --connect-timeout 3 https://speed.cloudflare.com/meta 2>/dev/null | awk -F\" '{print $26"-"$18"-"$30}' | sed -e 's/ /_/g')
+    isp=$(fetch_stdout "https://speed.cloudflare.com/meta" "$ips" 4 | awk -F\" '{print $26"-"$18"-"$30}' | sed -e 's/ /_/g')
     local node_tag
     node_tag=$(echo "$isp" | sed -e 's/_/%20/g' -e 's/,/%2C/g')
     if [[ -z "$node_tag" || "$node_tag" == "--" || "$node_tag" == "-" ]]; then
@@ -787,7 +899,7 @@ EOF
     reality-opts:
       public-key: ${reality_pub}
       short-id: ${reality_sid}
-    client-fingerprint: chrome
+      client-fingerprint: chrome
 EOF
 
         # (C2) VLESS Reality gRPC 直连节点
@@ -809,7 +921,7 @@ EOF
     reality-opts:
       public-key: ${reality_pub}
       short-id: ${reality_sid}
-    client-fingerprint: chrome
+      client-fingerprint: chrome
 EOF
 
         # (D) AnyTLS 直连节点 (自签 www.bing.com)
@@ -871,11 +983,7 @@ EOF
     if [ -n "$server_ipv6" ]; then
         local ss_user_info="${ss_method}:${ss_password}"
         local ss_base64=""
-        if [ "$OS_NAME" == "Alpine" ]; then
-            ss_base64=$(echo -n "$ss_user_info" | base64 | tr -d '\n')
-        else
-            ss_base64=$(echo -n "$ss_user_info" | base64 -w 0)
-        fi
+        ss_base64=$(echo -n "$ss_user_info" | base64 | tr -d '\n\r ')
         local pname_ss6="${node_tag}-SS-IPv6"
         ss_v6_uri="ss://${ss_base64}@[${server_ipv6}]:${port_ss_v6}#${pname_ss6}"
         echo "$ss_v6_uri" >> /opt/suoha_quick/nodes.txt
@@ -947,11 +1055,7 @@ rules:
 EOF
 
     show_progress 98 "正在编码 Base64 订阅并拉起本地 HTTP 订阅服务..."
-    if [ "$OS_NAME" == "Alpine" ]; then
-        base64 /opt/suoha_quick/nodes.txt | tr -d '\n' > /opt/suoha_quick/sub.txt
-    else
-        base64 -w 0 /opt/suoha_quick/nodes.txt > /opt/suoha_quick/sub.txt
-    fi
+    base64 /opt/suoha_quick/nodes.txt | tr -d '\n\r ' > /opt/suoha_quick/sub.txt
 
     local sub_host=""
     if [ -n "$server_ip" ]; then
@@ -972,7 +1076,8 @@ EOF
 
     cat > /opt/suoha_quick/v2ray.txt <<EOF
 ======================== 一键全协议梭哈节点列表 ========================
-[核心运行状态]:
+[系统与核心运行状态]:
+  ├─ 操作系统环境          : ${OS_NAME} ($(uname -m))
   ├─ 官方 Sing-box 主力进程 : ${sb_status}
   └─ Snell 双栈守护进程    : ${snell_status}
 
@@ -987,16 +1092,21 @@ $(cat /opt/suoha_quick/nodes.txt)
 $(echo -e "${snell_display_lines:-未检测到可用公网 IP，跳过 Snell 生成}")
 ======================== 端口与证书说明 ========================
 - Argo 节点 443 端口可按需替换为 CF 其它 TLS 端口: 2053, 2083, 2087, 2096, 8443
+
 - AnyTLS / Hysteria2 / TUIC 均已自动签发 www.bing.com 证书 (客户端需开启跳过证书验证)
+
 - VLESS Reality 共用参数 -> 伪装域名: www.bing.com | PublicKey: ${reality_pub} | ShortID: ${reality_sid}
+
   ├─ Reality Vision 端口: ${port_reality}
   └─ Reality gRPC   端口: ${port_rel_grpc} (ServiceName: ${grpc_service})
 - (注: XHTTP 节点已暂时屏蔽，等待官方内核原生支持)
+
 
 ======================== 客户端订阅及导入链接 ========================
 本机固定订阅服务端口: ${sub_port} (已永久保存，重新梭哈无需重新导入客户端)
 
 1. 通用在线订阅链接 (v2rayN / NekoBox / Shadowrocket / Karing):
+
 ${sub_online_url}
 
 2. v2rayN / NekoBox 一键导入链接:
@@ -1016,6 +1126,7 @@ EOF
     sleep 0.6
     clear
     cat /opt/suoha_quick/v2ray.txt
+    rm -f /tmp/suoha_bootstrap_*.sh 2>/dev/null
     echo -e "\n所有配置已保存至 /opt/suoha_quick/v2ray.txt，随时执行 cat /opt/suoha_quick/v2ray.txt 查看。"
 }
 
