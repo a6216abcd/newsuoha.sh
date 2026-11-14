@@ -310,13 +310,14 @@ function quicktunnel_all_in_one() {
     local server_ipv6
     server_ipv6=$(get_server_ipv6)
 
-    # 3. 生成自签名 www.icloud.com 证书与 Reality 密钥
-    show_progress 52 "正在自签 www.icloud.com TLS 证书与 Reality X25519 密钥..."
-    openssl ecparam -genkey -name prime256v1 -out /opt/suoha_quick/cert/icloud.key >/dev/null 2>&1
-    openssl req -new -x509 -days 3650 -key /opt/suoha_quick/cert/icloud.key \
-        -out /opt/suoha_quick/cert/icloud.crt \
-        -subj "/C=US/ST=California/L=Cupertino/O=Apple Inc./CN=www.icloud.com" \
-        -addext "subjectAltName=DNS:www.icloud.com,DNS:icloud.com" >/dev/null 2>&1
+    # 3. 生成自签名 swdist.apple.com 证书与 Reality 密钥
+    local sni_domain="swdist.apple.com"
+    show_progress 52 "正在自签 ${sni_domain} TLS 证书与 Reality X25519 密钥..."
+    openssl ecparam -genkey -name prime256v1 -out /opt/suoha_quick/cert/apple.key >/dev/null 2>&1
+    openssl req -new -x509 -days 3650 -key /opt/suoha_quick/cert/apple.key \
+        -out /opt/suoha_quick/cert/apple.crt \
+        -subj "/C=US/ST=California/L=Cupertino/O=Apple Inc./CN=${sni_domain}" \
+        -addext "subjectAltName=DNS:${sni_domain},DNS:apple.com" >/dev/null 2>&1
 
     local reality_keys
     reality_keys=$(/opt/suoha_quick/sing-box generate reality-keypair)
@@ -412,11 +413,11 @@ function quicktunnel_all_in_one() {
       ],
       "tls": {
         "enabled": true,
-        "server_name": "www.icloud.com",
+        "server_name": "${sni_domain}",
         "reality": {
           "enabled": true,
           "handshake": {
-            "server": "www.icloud.com",
+            "server": "${sni_domain}",
             "server_port": 443
           },
           "private_key": "${reality_priv}",
@@ -442,11 +443,11 @@ function quicktunnel_all_in_one() {
       },
       "tls": {
         "enabled": true,
-        "server_name": "www.icloud.com",
+        "server_name": "${sni_domain}",
         "reality": {
           "enabled": true,
           "handshake": {
-            "server": "www.icloud.com",
+            "server": "${sni_domain}",
             "server_port": 443
           },
           "private_key": "${reality_priv}",
@@ -479,9 +480,9 @@ function quicktunnel_all_in_one() {
       ],
       "tls": {
         "enabled": true,
-        "server_name": "www.icloud.com",
-        "certificate_path": "/opt/suoha_quick/cert/icloud.crt",
-        "key_path": "/opt/suoha_quick/cert/icloud.key"
+        "server_name": "${sni_domain}",
+        "certificate_path": "/opt/suoha_quick/cert/apple.crt",
+        "key_path": "/opt/suoha_quick/cert/apple.key"
       }
     },
     {
@@ -499,8 +500,8 @@ function quicktunnel_all_in_one() {
         "alpn": [
           "h3"
         ],
-        "certificate_path": "/opt/suoha_quick/cert/icloud.crt",
-        "key_path": "/opt/suoha_quick/cert/icloud.key"
+        "certificate_path": "/opt/suoha_quick/cert/apple.crt",
+        "key_path": "/opt/suoha_quick/cert/apple.key"
       }
     },
     {
@@ -521,8 +522,8 @@ function quicktunnel_all_in_one() {
         "alpn": [
           "h3"
         ],
-        "certificate_path": "/opt/suoha_quick/cert/icloud.crt",
-        "key_path": "/opt/suoha_quick/cert/icloud.key"
+        "certificate_path": "/opt/suoha_quick/cert/apple.crt",
+        "key_path": "/opt/suoha_quick/cert/apple.key"
       }
     },
     {
@@ -771,7 +772,7 @@ EOF
     if [ -n "$direct_host" ]; then
         # (C1) VLESS Reality Vision 直连节点 (主力首选)
         local pname_rel="${node_tag}-VLESS-Reality-Vision"
-        echo "vless://${uuid}@${direct_host}:${port_reality}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.icloud.com&fp=chrome&pbk=${reality_pub}&sid=${reality_sid}&type=tcp&headerType=none#${pname_rel}" >> /opt/suoha_quick/nodes.txt
+        echo "vless://${uuid}@${direct_host}:${port_reality}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${sni_domain}&fp=chrome&pbk=${reality_pub}&sid=${reality_sid}&type=tcp&headerType=none#${pname_rel}" >> /opt/suoha_quick/nodes.txt
         proxy_names+=("$pname_rel")
         cat >> /opt/suoha_quick/clash.yaml <<EOF
   - name: "${pname_rel}"
@@ -783,7 +784,7 @@ EOF
     tls: true
     udp: true
     flow: xtls-rprx-vision
-    servername: www.icloud.com
+    servername: ${sni_domain}
     reality-opts:
       public-key: ${reality_pub}
       short-id: ${reality_sid}
@@ -792,7 +793,7 @@ EOF
 
         # (C2) VLESS Reality gRPC 直连节点
         local pname_rel_grpc="${node_tag}-VLESS-Reality-gRPC"
-        echo "vless://${uuid}@${direct_host}:${port_rel_grpc}?encryption=none&security=reality&sni=www.icloud.com&fp=chrome&pbk=${reality_pub}&sid=${reality_sid}&type=grpc&serviceName=${grpc_service}&mode=gun#${pname_rel_grpc}" >> /opt/suoha_quick/nodes.txt
+        echo "vless://${uuid}@${direct_host}:${port_rel_grpc}?encryption=none&security=reality&sni=${sni_domain}&fp=chrome&pbk=${reality_pub}&sid=${reality_sid}&type=grpc&serviceName=${grpc_service}&mode=gun#${pname_rel_grpc}" >> /opt/suoha_quick/nodes.txt
         proxy_names+=("$pname_rel_grpc")
         cat >> /opt/suoha_quick/clash.yaml <<EOF
   - name: "${pname_rel_grpc}"
@@ -803,7 +804,7 @@ EOF
     network: grpc
     tls: true
     udp: true
-    servername: www.icloud.com
+    servername: ${sni_domain}
     grpc-opts:
       grpc-service-name: ${grpc_service}
     reality-opts:
@@ -812,9 +813,9 @@ EOF
       client-fingerprint: chrome
 EOF
 
-        # (D) AnyTLS 直连节点 (自签 www.icloud.com)
-        local pname_any="${node_tag}-AnyTLS-iCloud"
-        echo "anytls://${password_all}@${direct_host}:${port_anytls}?sni=www.icloud.com&insecure=1#${pname_any}" >> /opt/suoha_quick/nodes.txt
+        # (D) AnyTLS 直连节点 (自签 swdist.apple.com)
+        local pname_any="${node_tag}-AnyTLS-Apple"
+        echo "anytls://${password_all}@${direct_host}:${port_anytls}?sni=${sni_domain}&insecure=1#${pname_any}" >> /opt/suoha_quick/nodes.txt
         proxy_names+=("$pname_any")
         cat >> /opt/suoha_quick/clash.yaml <<EOF
   - name: "${pname_any}"
@@ -824,13 +825,13 @@ EOF
     password: "${password_all}"
     client-fingerprint: chrome
     udp: true
-    sni: www.icloud.com
+    sni: ${sni_domain}
     skip-cert-verify: true
 EOF
 
-        # (E) Hysteria2 直连节点 (自签 www.icloud.com)
-        local pname_hy2="${node_tag}-Hysteria2-iCloud"
-        echo "hysteria2://${password_all}@${direct_host}:${port_hy2}?sni=www.icloud.com&insecure=1#${pname_hy2}" >> /opt/suoha_quick/nodes.txt
+        # (E) Hysteria2 直连节点 (自签 swdist.apple.com)
+        local pname_hy2="${node_tag}-Hysteria2-Apple"
+        echo "hysteria2://${password_all}@${direct_host}:${port_hy2}?sni=${sni_domain}&insecure=1#${pname_hy2}" >> /opt/suoha_quick/nodes.txt
         proxy_names+=("$pname_hy2")
         cat >> /opt/suoha_quick/clash.yaml <<EOF
   - name: "${pname_hy2}"
@@ -838,15 +839,15 @@ EOF
     server: ${direct_yaml_host}
     port: ${port_hy2}
     password: "${password_all}"
-    sni: www.icloud.com
+    sni: ${sni_domain}
     skip-cert-verify: true
     alpn:
       - h3
 EOF
 
-        # (F) TUIC v5 直连节点 (自签 www.icloud.com)
-        local pname_tuic="${node_tag}-TUICv5-iCloud"
-        echo "tuic://${uuid}:${password_all}@${direct_host}:${port_tuic}?congestion_control=bbr&alpn=h3&sni=www.icloud.com&udp_relay_mode=native&allow_insecure=1#${pname_tuic}" >> /opt/suoha_quick/nodes.txt
+        # (F) TUIC v5 直连节点 (自签 swdist.apple.com)
+        local pname_tuic="${node_tag}-TUICv5-Apple"
+        echo "tuic://${uuid}:${password_all}@${direct_host}:${port_tuic}?congestion_control=bbr&alpn=h3&sni=${sni_domain}&udp_relay_mode=native&allow_insecure=1#${pname_tuic}" >> /opt/suoha_quick/nodes.txt
         proxy_names+=("$pname_tuic")
         cat >> /opt/suoha_quick/clash.yaml <<EOF
   - name: "${pname_tuic}"
@@ -861,7 +862,7 @@ EOF
     reduce-rtt: true
     udp-relay-mode: native
     congestion-controller: bbr
-    sni: www.icloud.com
+    sni: ${sni_domain}
     skip-cert-verify: true
 EOF
     fi
@@ -988,9 +989,9 @@ $(echo -e "${snell_display_lines:-未检测到可用公网 IP，跳过 Snell 生
 ======================== 端口与证书说明 ========================
 - Argo 节点 443 端口可按需替换为 CF 其它 TLS 端口: 2053, 2083, 2087, 2096, 8443
 
-- AnyTLS / Hysteria2 / TUIC 均已自动签发 www.icloud.com 证书 (客户端需开启跳过证书验证)
+- AnyTLS / Hysteria2 / TUIC 均已自动签发 ${sni_domain} 证书 (客户端需开启跳过证书验证)
 
-- VLESS Reality 共用参数 -> 伪装域名: www.icloud.com | PublicKey: ${reality_pub} | ShortID: ${reality_sid}
+- VLESS Reality 共用参数 -> 伪装域名: ${sni_domain} | PublicKey: ${reality_pub} | ShortID: ${reality_sid}
 
   ├─ Reality Vision 端口: ${port_reality}
   └─ Reality gRPC   端口: ${port_rel_grpc} (ServiceName: ${grpc_service})
