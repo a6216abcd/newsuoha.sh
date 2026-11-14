@@ -1,35 +1,7 @@
-#!/bin/sh
-# onekey suoha - Full Protocol Edition (4K/1080P TCP+UDP内核级调优 + 官方Sing-box主力 + 单Argo双路径 + Reality[Vision/gRPC] + AnyTLS + HY2 + TUIC + Snell双栈 + SS-IPv6)
-# 全平台兼容版: 支持 Debian / Ubuntu / Alpine / CentOS / Fedora (无预装 curl/bash 环境亦可直接通过 sh / wget 引导安装)
+#!/bin/bash
+# onekey suoha - Full Protocol Edition (1080P/4K TCP+UDP内核优化 + 官方Sing-box主力 + 单Argo双路径 + Reality[Vision/gRPC] + AnyTLS + HY2 + TUIC + Snell双栈 + SS-IPv6)
 
 export PATH=$PATH:/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin
-
-# 若当前以纯 /bin/sh (如精简版 Alpine) 引导执行，自动检测/安装 bash 后无缝接管运行
-if [ -z "$BASH_VERSION" ]; then
-    if command -v bash >/dev/null 2>&1; then
-        exec bash "$0" "$@"
-    fi
-    if [ -f /etc/alpine-release ] && command -v apk >/dev/null 2>&1; then
-        echo "[初始化] 检测到精简版 Alpine 环境，正在自动补全 bash 与基础证书组件..."
-        apk update >/dev/null 2>&1
-        apk add --no-cache bash ca-certificates >/dev/null 2>&1
-    elif command -v apt-get >/dev/null 2>&1; then
-        apt-get update >/dev/null 2>&1
-        apt-get install -y bash ca-certificates >/dev/null 2>&1
-    elif command -v yum >/dev/null 2>&1; then
-        yum install -y bash ca-certificates >/dev/null 2>&1
-    fi
-    if command -v bash >/dev/null 2>&1; then
-        if [ ! -f "$0" ] || [ "$0" = "sh" ] || [ "$0" = "/bin/sh" ]; then
-            TMP_SELF="/tmp/suoha_bootstrap_$$.sh"
-            cat > "$TMP_SELF"
-            chmod +x "$TMP_SELF"
-            exec bash "$TMP_SELF" "$@"
-        else
-            exec bash "$0" "$@"
-        fi
-    fi
-fi
 
 ACTION="${1:-install}"
 
@@ -58,118 +30,66 @@ function show_progress() {
     printf "\r\033[K${CYAN}[${GREEN}${bar_filled}${NC}${bar_empty}${CYAN}] ${YELLOW}%3d%%${NC} - %s" "$pct" "$msg"
 }
 
-# 通用 HTTP 下载封装 (优先 curl，无 curl 时自动回退 wget，兼容 BusyBox wget)
-function fetch_stdout() {
-    local url="$1"
-    local ip_ver="$2"
-    local timeout="${3:-5}"
-    if command -v curl >/dev/null 2>&1; then
-        if [ "$ip_ver" = "4" ]; then
-            curl -s4L --connect-timeout "$timeout" "$url" 2>/dev/null
-        elif [ "$ip_ver" = "6" ]; then
-            curl -s6L --connect-timeout "$timeout" "$url" 2>/dev/null
-        else
-            curl -sL --connect-timeout "$timeout" "$url" 2>/dev/null
-        fi
-    elif command -v wget >/dev/null 2>&1; then
-        if wget --help 2>&1 | grep -q -- '--inet4-only'; then
-            if [ "$ip_ver" = "4" ]; then
-                wget -qO- -4 -T "$timeout" "$url" 2>/dev/null
-            elif [ "$ip_ver" = "6" ]; then
-                wget -qO- -6 -T "$timeout" "$url" 2>/dev/null
-            else
-                wget -qO- -T "$timeout" "$url" 2>/dev/null
-            fi
-        else
-            wget -qO- -T "$timeout" "$url" 2>/dev/null
-        fi
-    fi
-}
+linux_os=("Debian" "Ubuntu" "CentOS" "Fedora" "Alpine")
+linux_update=("apt update" "apt update" "yum -y update" "yum -y update" "apk update")
+linux_install=("apt -y install" "apt -y install" "yum -y install" "yum -y install" "apk add -f")
+n=0
+OS_NAME=$(grep -i PRETTY_NAME /etc/os-release 2>/dev/null | cut -d \" -f2 | awk '{print $1}')
 
-function fetch_file() {
-    local url="$1"
-    local out_path="$2"
-    if command -v curl >/dev/null 2>&1; then
-        curl -sL --connect-timeout 15 "$url" -o "$out_path" 2>/dev/null
-    elif command -v wget >/dev/null 2>&1; then
-        wget -q -T 15 "$url" -O "$out_path" 2>/dev/null
+for i in "${linux_os[@]}"; do
+    if [ "$i" == "$OS_NAME" ]; then
+        break
+    else
+        n=$((n+1))
     fi
-}
+done
 
-# 精准识别发行版 (支持 Debian / Ubuntu / Alpine / CentOS / Fedora)
-PKG_MANAGER="apt"
-OS_NAME="Debian"
-if [ -f /etc/alpine-release ] || grep -qi "alpine" /etc/os-release 2>/dev/null; then
-    OS_NAME="Alpine"
-    PKG_MANAGER="apk"
-elif grep -qi "ubuntu" /etc/os-release 2>/dev/null; then
-    OS_NAME="Ubuntu"
-    PKG_MANAGER="apt"
-elif grep -qi "debian" /etc/os-release 2>/dev/null; then
-    OS_NAME="Debian"
-    PKG_MANAGER="apt"
-elif grep -qi "fedora" /etc/os-release 2>/dev/null; then
-    OS_NAME="Fedora"
-    PKG_MANAGER="dnf"
-elif grep -qiE "centos|rhel|rocky|almalinux" /etc/os-release 2>/dev/null; then
-    OS_NAME="CentOS"
-    PKG_MANAGER="yum"
+if [ $n -eq 5 ]; then
+    n=0
 fi
 
-function pkg_update() {
-    case "$PKG_MANAGER" in
-        apk) apk update >/dev/null 2>&1 ;;
-        apt) apt-get update >/dev/null 2>&1 || apt update >/dev/null 2>&1 ;;
-        dnf) dnf makecache >/dev/null 2>&1 ;;
-        yum) yum makecache >/dev/null 2>&1 ;;
-    esac
-}
-
-function pkg_install() {
-    local pkg="$1"
-    case "$PKG_MANAGER" in
-        apk) apk add --no-cache "$pkg" >/dev/null 2>&1 ;;
-        apt) DEBIAN_FRONTEND=noninteractive apt-get -y install "$pkg" >/dev/null 2>&1 || apt -y install "$pkg" >/dev/null 2>&1 ;;
-        dnf) dnf -y install "$pkg" >/dev/null 2>&1 ;;
-        yum) yum -y install "$pkg" >/dev/null 2>&1 ;;
-    esac
-}
-
-# TCP & UDP 4K/1080P 流媒体内核参数与系统描述符优化
+# 针对 1080P / 4K 高码率视频流媒体进行 TCP & UDP 内核级网络优化 (自动适配内存大小防 OOM)
 function optimize_network_4k() {
-    show_progress 3 "正在应用 TCP/UDP 1080P/4K 流媒体与 BBR 内核优化..."
+    show_progress 2 "正在执行 TCP/UDP 1080P/4K 流媒体与 BBR 内核级网络优化..."
 
-    # 尝试加载 BBR 与 conntrack 内核模块 (容器环境只读时自动跳过)
     modprobe tcp_bbr >/dev/null 2>&1
     modprobe nf_conntrack >/dev/null 2>&1
-
-    # 提升当前进程及子进程文件描述符上限，防止高并发 4K 分片连接耗尽句柄
     ulimit -n 1048576 >/dev/null 2>&1
+
+    # 根据当前物理内存自适应计算最大 Socket 缓冲区 (小于 512MB 用 8MB，否则用 32MB)
+    local total_mem_mb
+    total_mem_mb=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo 2>/dev/null)
+    local max_buf=33554432
+    local def_buf=1048576
+    if [[ -n "$total_mem_mb" && "$total_mem_mb" -lt 512 ]]; then
+        max_buf=8388608
+        def_buf=262144
+    fi
 
     if [ -w /etc ] && [ -w /proc/sys ]; then
         mkdir -p /etc/sysctl.d >/dev/null 2>&1
-        cat > /etc/sysctl.d/99-suoha-4k.conf <<'EOF'
-# === OneKey Suoha 1080P / 4K Streaming TCP & UDP Kernel Tuning ===
-# 1. BBR 拥塞控制与 FQ 公平队列调度 (大幅提升跨洋大码率吞吐与抗丢包能力)
+        cat > /etc/sysctl.d/99-suoha-4k.conf <<EOF
+# === OneKey Suoha 1080P / 4K Video Streaming TCP & UDP Optimization ===
+# 1. BBR 拥塞控制与 FQ 队列调度 (最大化跨洋大带宽吞吐与抗丢包能力)
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
 
-# 2. TCP/UDP 读写缓冲区上限提升至 32MB (喂饱 4K 60fps 视频流高 BDP 窗口)
-net.core.rmem_default = 1048576
-net.core.wmem_default = 1048576
-net.core.rmem_max = 33554432
-net.core.wmem_max = 33554432
-net.ipv4.tcp_rmem = 4096 1048576 33554432
-net.ipv4.tcp_wmem = 4096 1048576 33554432
+# 2. TCP / UDP 读写缓冲区窗口扩容 (喂饱 1080P / 4K 60fps 高 BDP 视频流)
+net.core.rmem_default = ${def_buf}
+net.core.wmem_default = ${def_buf}
+net.core.rmem_max = ${max_buf}
+net.core.wmem_max = ${max_buf}
+net.ipv4.tcp_rmem = 4096 ${def_buf} ${max_buf}
+net.ipv4.tcp_wmem = 4096 ${def_buf} ${max_buf}
 
-# 3. UDP / QUIC (Hysteria2 / TUIC v5) 突发队列防丢包调优
+# 3. UDP / QUIC (Hysteria2 / TUIC v5) 突发高码率队列防丢包
 net.ipv4.udp_rmem_min = 65536
 net.ipv4.udp_wmem_min = 65536
 net.core.netdev_max_backlog = 16384
 net.core.somaxconn = 8192
 net.ipv4.tcp_max_syn_backlog = 8192
 
-# 4. 视频流暂停恢复防降速、MTU 路径黑洞自动探测与连接复用
+# 4. 视频暂停恢复防降速、MTU 路径黑洞探测与低延迟握手优化
 net.ipv4.tcp_slow_start_after_idle = 0
 net.ipv4.tcp_mtu_probing = 1
 net.ipv4.tcp_fastopen = 3
@@ -180,7 +100,7 @@ net.ipv4.tcp_keepalive_intvl = 30
 net.ipv4.tcp_keepalive_probes = 3
 net.ipv4.ip_local_port_range = 1024 65535
 
-# 5. 连接跟踪表扩容 (避免多客户端并发 4K 分片请求时丢包)
+# 5. 高并发连接跟踪表调优 (兼容多路并发分片且防断流)
 net.netfilter.nf_conntrack_max = 262144
 net.netfilter.nf_conntrack_udp_timeout = 60
 net.netfilter.nf_conntrack_udp_timeout_stream = 180
@@ -188,7 +108,6 @@ EOF
         sysctl -p /etc/sysctl.d/99-suoha-4k.conf >/dev/null 2>&1 || sysctl --system >/dev/null 2>&1
     fi
 
-    # 持久化系统级 ulimit 文件句柄限制
     if [ -w /etc/security/limits.conf ]; then
         if ! grep -q "suoha-4k-nofile" /etc/security/limits.conf 2>/dev/null; then
             cat >> /etc/security/limits.conf <<'EOF'
@@ -203,81 +122,57 @@ EOF
 }
 
 install_deps() {
-    local deps=("curl" "wget" "unzip" "python3" "openssl" "tar" "jq")
-    if [ "$OS_NAME" == "Alpine" ]; then
-        deps=("curl" "wget" "unzip" "python3" "openssl" "tar" "jq" "ca-certificates" "gcompat" "libc6-compat" "iproute2" "coreutils")
-    fi
-
+    local deps=("unzip" "curl" "python3" "openssl" "tar" "jq")
     local need_update=0
     for dep in "${deps[@]}"; do
-        if [ "$OS_NAME" == "Alpine" ]; then
-            if ! apk info -e "$dep" >/dev/null 2>&1 && [ -z "$(type -P "$dep" 2>/dev/null)" ]; then
-                need_update=1
-                break
-            fi
-        else
-            if [ -z "$(type -P "$dep" 2>/dev/null)" ]; then
-                need_update=1
-                break
-            fi
+        if [ -z "$(type -P "$dep")" ]; then
+            need_update=1
+            break
         fi
     done
 
     if [ $need_update -eq 1 ]; then
-        show_progress 5 "正在更新系统软件源 (${OS_NAME})..."
-        pkg_update
+        show_progress 5 "正在更新系统软件源..."
+        ${linux_update[$n]} >/dev/null 2>&1
         local total_deps=${#deps[@]}
         local idx=0
         for dep in "${deps[@]}"; do
             idx=$((idx+1))
             local step_pct=$((5 + idx * 7 / total_deps))
-            if [ "$OS_NAME" == "Alpine" ]; then
-                if ! apk info -e "$dep" >/dev/null 2>&1; then
-                    show_progress $step_pct "正在安装依赖组件: ${dep}..."
-                    pkg_install "$dep"
-                fi
-            else
-                if [ -z "$(type -P "$dep" 2>/dev/null)" ]; then
-                    show_progress $step_pct "正在安装依赖组件: ${dep}..."
-                    pkg_install "$dep"
-                fi
+            if [ -z "$(type -P "$dep")" ]; then
+                show_progress $step_pct "正在安装依赖组件: ${dep}..."
+                ${linux_install[$n]} "$dep" >/dev/null 2>&1
             fi
         done
     fi
-    show_progress 12 "系统基础依赖检查完成 (${OS_NAME})"
+    show_progress 12 "系统基础依赖检查完成"
 }
 
 function get_server_ip() {
     local ip=""
-    if command -v ip >/dev/null 2>&1; then
-        ip=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1); exit}')
-    fi
+    ip=$(ip route get 1.1.1.1 2>/dev/null | awk '{print $7; exit}')
     if [[ -z "$ip" || "$ip" =~ ^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.) ]]; then
-        ip=$(fetch_stdout "https://www.cloudflare.com/cdn-cgi/trace" "4" 3 | awk -F= '/^ip=/{print $2}' | tr -d '\n\r ')
+        ip=$(curl -s4 --connect-timeout 3 https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null | awk -F= '/ip/{print $2}')
     fi
     if [ -z "$ip" ]; then
-        ip=$(fetch_stdout "https://ipv4.icanhazip.com" "4" 3 | tr -d '\n\r ')
+        ip=$(curl -s4 --connect-timeout 3 https://ipv4.icanhazip.com 2>/dev/null | tr -d '\n\r ')
     fi
     if [ -z "$ip" ]; then
-        ip=$(fetch_stdout "https://api.ip.sb/ip" "4" 3 | tr -d '\n\r ')
+        ip=$(curl -s4 --connect-timeout 3 https://api.ip.sb/ip 2>/dev/null | tr -d '\n\r ')
     fi
     echo "$ip"
 }
 
 function get_server_ipv6() {
     local ip6=""
-    ip6=$(fetch_stdout "https://api64.ipify.org" "6" 3 | tr -d '\n\r ')
-    if [[ -z "$ip6" || "$ip6" != *":"* ]]; then
-        ip6=$(fetch_stdout "https://ipv6.icanhazip.com" "6" 3 | tr -d '\n\r ')
+    ip6=$(curl -s6 --connect-timeout 3 https://api64.ipify.org 2>/dev/null | tr -d '\n\r ')
+    if [ -z "$ip6" ]; then
+        ip6=$(curl -s6 --connect-timeout 3 https://ipv6.icanhazip.com 2>/dev/null | tr -d '\n\r ')
     fi
-    if [[ -z "$ip6" || "$ip6" != *":"* ]] && command -v ip >/dev/null 2>&1; then
+    if [ -z "$ip6" ]; then
         ip6=$(ip -6 addr show scope global 2>/dev/null | grep inet6 | awk '{print $2}' | cut -d/ -f1 | head -n 1 | tr -d '\n\r ')
     fi
-    if [[ "$ip6" == *":"* ]]; then
-        echo "$ip6"
-    else
-        echo ""
-    fi
+    echo "$ip6"
 }
 
 function open_firewall_port() {
@@ -394,7 +289,7 @@ function uninstall_all() {
     fi
     sleep 0.5
     show_progress 90 "正在删除配置文件、内核调优与证书目录..."
-    rm -rf /opt/suoha /opt/suoha_quick /etc/suoha_sub_port /var/www/suoha_sub /usr/bin/suoha /tmp/suoha_bootstrap_*.sh /etc/sysctl.d/99-suoha-4k.conf
+    rm -rf /opt/suoha /opt/suoha_quick /etc/suoha_sub_port /var/www/suoha_sub /usr/bin/suoha /etc/sysctl.d/99-suoha-4k.conf
     sysctl --system >/dev/null 2>&1
     show_progress 100 "卸载清理完成！"
     echo -e "\n所有梭哈全协议服务、内核网络调优及订阅文件已彻底清理完成。"
@@ -454,22 +349,22 @@ function quicktunnel_all_in_one() {
 
     show_progress 15 "正在获取官方 Sing-box 稳定版核心..."
     local sb_version
-    sb_version=$(fetch_stdout "https://api.github.com/repos/SagerNet/sing-box/releases/latest" "" 8 | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
+    sb_version=$(curl -s https://api.github.com/repos/SagerNet/sing-box/releases/latest | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
     if [ -z "$sb_version" ]; then
         sb_version="1.12.12"
     fi
 
     show_progress 22 "正在下载官方 Sing-box v${sb_version} 主力核心..."
-    fetch_file "https://github.com/SagerNet/sing-box/releases/download/v${sb_version}/sing-box-${sb_version}-${arch_sb}.tar.gz" "sb.tar.gz"
+    curl -sL "https://github.com/SagerNet/sing-box/releases/download/v${sb_version}/sing-box-${sb_version}-${arch_sb}.tar.gz" -o sb.tar.gz
     tar -xzf sb.tar.gz >/dev/null 2>&1
     mv "sing-box-${sb_version}-${arch_sb}/sing-box" /opt/suoha_quick/sing-box 2>/dev/null
     rm -rf "sing-box-${sb_version}-${arch_sb}" sb.tar.gz
 
     show_progress 34 "正在下载 Cloudflare Argo 隧道组件..."
-    fetch_file "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-${arch_cf}" "/opt/suoha_quick/cloudflared-linux"
+    curl -sL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-${arch_cf}" -o /opt/suoha_quick/cloudflared-linux
 
     show_progress 44 "正在下载官方 Snell v4.1.1 双栈服务端..."
-    fetch_file "https://dl.nssurge.com/snell/snell-server-v4.1.1-${arch_snell}.zip" "snell.zip"
+    curl -sL "https://dl.nssurge.com/snell/snell-server-v4.1.1-${arch_snell}.zip" -o snell.zip
     if [ -s snell.zip ] && unzip -t snell.zip >/dev/null 2>&1; then
         unzip -oq snell.zip -d /opt/suoha_quick/ >/dev/null 2>&1
     fi
@@ -825,7 +720,7 @@ EOF
     fi
 
     local isp
-    isp=$(fetch_stdout "https://speed.cloudflare.com/meta" "$ips" 4 | awk -F\" '{print $26"-"$18"-"$30}' | sed -e 's/ /_/g')
+    isp=$(curl -${ips} -s --connect-timeout 3 https://speed.cloudflare.com/meta 2>/dev/null | awk -F\" '{print $26"-"$18"-"$30}' | sed -e 's/ /_/g')
     local node_tag
     node_tag=$(echo "$isp" | sed -e 's/_/%20/g' -e 's/,/%2C/g')
     if [[ -z "$node_tag" || "$node_tag" == "--" || "$node_tag" == "-" ]]; then
@@ -1051,7 +946,11 @@ EOF
     if [ -n "$server_ipv6" ]; then
         local ss_user_info="${ss_method}:${ss_password}"
         local ss_base64=""
-        ss_base64=$(echo -n "$ss_user_info" | base64 | tr -d '\n\r ')
+        if [ "$OS_NAME" == "Alpine" ]; then
+            ss_base64=$(echo -n "$ss_user_info" | base64 | tr -d '\n')
+        else
+            ss_base64=$(echo -n "$ss_user_info" | base64 -w 0)
+        fi
         local pname_ss6="${node_tag}-SS-IPv6"
         ss_v6_uri="ss://${ss_base64}@[${server_ipv6}]:${port_ss_v6}#${pname_ss6}"
         echo "$ss_v6_uri" >> /opt/suoha_quick/nodes.txt
@@ -1123,7 +1022,11 @@ rules:
 EOF
 
     show_progress 98 "正在编码 Base64 订阅并拉起本地 HTTP 订阅服务..."
-    base64 /opt/suoha_quick/nodes.txt | tr -d '\n\r ' > /opt/suoha_quick/sub.txt
+    if [ "$OS_NAME" == "Alpine" ]; then
+        base64 /opt/suoha_quick/nodes.txt | tr -d '\n' > /opt/suoha_quick/sub.txt
+    else
+        base64 -w 0 /opt/suoha_quick/nodes.txt > /opt/suoha_quick/sub.txt
+    fi
 
     local sub_host=""
     if [ -n "$server_ip" ]; then
@@ -1149,9 +1052,8 @@ EOF
 
     cat > /opt/suoha_quick/v2ray.txt <<EOF
 ======================== 一键全协议梭哈节点列表 ========================
-[系统与核心运行状态]:
-  ├─ 操作系统环境          : ${OS_NAME} ($(uname -m))
-  ├─ 4K/1080P 内核网络调优 : 拥塞控制=${cc_active} | 队列=${qdisc_active} | 32MB双缓冲已生效
+[核心运行状态]:
+  ├─ 1080P/4K 内核网络调优 : 拥塞控制=${cc_active} | 队列=${qdisc_active} | 缓冲上限=$((max_buf/1048576))MB
   ├─ 官方 Sing-box 主力进程 : ${sb_status}
   └─ Snell 双栈守护进程    : ${snell_status}
 
@@ -1200,7 +1102,6 @@ EOF
     sleep 0.6
     clear
     cat /opt/suoha_quick/v2ray.txt
-    rm -f /tmp/suoha_bootstrap_*.sh 2>/dev/null
     echo -e "\n所有配置已保存至 /opt/suoha_quick/v2ray.txt，随时执行 cat /opt/suoha_quick/v2ray.txt 查看。"
 }
 
