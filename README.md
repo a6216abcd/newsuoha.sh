@@ -50,19 +50,21 @@
 
 ## 一键运行命令
 
-登录 VPS 终端（支持 root 用户），执行以下命令即可全自动完成网络内核优化与全协议部署：
+登录 VPS 终端（支持 root 用户），执行以下命令即可启动交互菜单：
 
 ```bash
-curl -fsSL [https://raw.githubusercontent.com/a6216abcd/newsuoha.sh/refs/heads/main/suoha.sh](https://raw.githubusercontent.com/a6216abcd/newsuoha.sh/refs/heads/main/suoha.sh) -o /tmp/suoha.sh && bash /tmp/suoha.sh
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/a6216abcd/newsuoha.sh/refs/heads/main/suoha.sh)"
 
 ```
 
-如果系统未预装 `curl`（如精简版 Debian / Ubuntu / Alpine），可使用 `wget` 代替：
+如果系统未预装 `curl`，可使用 `wget` 代替：
 
 ```bash
-wget -qO /tmp/suoha.sh [https://raw.githubusercontent.com/a6216abcd/newsuoha.sh/refs/heads/main/suoha.sh](https://raw.githubusercontent.com/a6216abcd/newsuoha.sh/refs/heads/main/suoha.sh) && bash /tmp/suoha.sh
+bash -c "$(wget -qO- https://raw.githubusercontent.com/a6216abcd/newsuoha.sh/refs/heads/main/suoha.sh)"
 
 ```
+
+---
 
 部署完成后，所有内核调优状态、节点链接、Snell 配置及客户端订阅信息均保存在 `/opt/suoha_quick/v2ray.txt`，随时可通过以下命令再次查看：
 
@@ -130,23 +132,6 @@ cat /opt/suoha_quick/v2ray.txt
 
 ---
 
-## 卸载与清理
-
-执行以下任意一条卸载命令，脚本将自动终止所有运行中的 `sing-box`、`cloudflared-linux`、`snell-server`、本地分流器及后台 HTTP 订阅服务进程，还原内核网络参数配置，并彻底删除 `/opt/suoha_quick`、`/var/www/suoha_sub` 与 `/etc/suoha_sub_port`：
-
-```bash
-curl -fsSL [https://raw.githubusercontent.com/a6216abcd/newsuoha.sh/refs/heads/main/suoha.sh](https://raw.githubusercontent.com/a6216abcd/newsuoha.sh/refs/heads/main/suoha.sh) -o /tmp/suoha.sh && bash /tmp/suoha.sh uninstall
-
-```
-
-或者使用 `wget`：
-
-```bash
-wget -qO /tmp/suoha.sh [https://raw.githubusercontent.com/a6216abcd/newsuoha.sh/refs/heads/main/suoha.sh](https://raw.githubusercontent.com/a6216abcd/newsuoha.sh/refs/heads/main/suoha.sh) && bash /tmp/suoha.sh uninstall
-
-```
-
----
 
 ## 免责声明
 
