@@ -1,5 +1,5 @@
 #!/bin/bash
-# onekey suoha - Full Protocol Edition (官方Sing-box主力 + 单Argo双路径 + 全球小众自动竞速Reality[Vision/gRPC] + AnyTLS + HY2 + TUIC + Snell双栈 + SS-IPv6)
+# onekey suoha - Full Protocol Edition (官方Sing-box主力 + 单Argo双路径 + Reality[Vision/gRPC] + AnyTLS + HY2 + TUIC + Snell双栈 + SS-IPv6)
 
 export PATH=$PATH:/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin
 
@@ -100,34 +100,6 @@ function get_server_ipv6() {
         ip6=$(ip -6 addr show scope global 2>/dev/null | grep inet6 | awk '{print $2}' | cut -d/ -f1 | head -n 1 | tr -d '\n\r ')
     fi
     echo "$ip6"
-}
-
-function select_best_reality_sni() {
-    local candidates=("www.yamaha.com" "www.mozilla.org" "www.jetbrains.com" "www.kernel.org" "www.python.org" "www.logitech.com" "www.lenovo.com" "www.debian.org")
-    local best_sni="www.mozilla.org"
-    local best_time="9.999999"
-
-    for cand in "${candidates[@]}"; do
-        local probe
-        probe=$(curl -sI -o /dev/null -w "%{http_version}|%{http_code}|%{time_connect}" --tlsv1.3 --http2 --connect-timeout 2 "https://${cand}" 2>/dev/null)
-        local h_ver
-        h_ver=$(echo "$probe" | cut -d'|' -f1)
-        local h_code
-        h_code=$(echo "$probe" | cut -d'|' -f2)
-        local h_time
-        h_time=$(echo "$probe" | cut -d'|' -f3)
-
-        if [[ "$h_ver" == "2" && ("$h_code" == "200" || "$h_code" == "301" || "$h_code" == "302") && -n "$h_time" ]]; then
-            local is_faster
-            is_faster=$(python3 -c "print(1 if float('${h_time}') < float('${best_time}') else 0)" 2>/dev/null)
-            if [ "$is_faster" == "1" ]; then
-                best_time="$h_time"
-                best_sni="$cand"
-            fi
-        fi
-    done
-
-    echo "${best_sni}|${best_time}"
 }
 
 function open_firewall_port() {
@@ -338,22 +310,13 @@ function quicktunnel_all_in_one() {
     local server_ipv6
     server_ipv6=$(get_server_ipv6)
 
-    # 3. 全球小众 Reality 伪装域名自动竞速择优 & 自签名证书生成
-    show_progress 50 "正在对全球小众高权重域名进行 TLS 1.3 + H2 竞速择优..."
-    local sni_probe_res
-    sni_probe_res=$(select_best_reality_sni)
-    local reality_sni
-    reality_sni=$(echo "$sni_probe_res" | cut -d'|' -f1)
-    local reality_sni_rtt
-    reality_sni_rtt=$(echo "$sni_probe_res" | cut -d'|' -f2)
-
-    local self_sni="www.fujitsu.com"
-    show_progress 53 "优选 Reality 目标: ${reality_sni} (${reality_sni_rtt}s) | 自签: ${self_sni}..."
+    # 3. 生成自签名 www.fujitsu.com 证书与 Reality X25519 密钥 (Reality 保留 www.bing.com)
+    show_progress 52 "正在自签 www.fujitsu.com TLS 证书与 Reality X25519 密钥..."
     openssl ecparam -genkey -name prime256v1 -out /opt/suoha_quick/cert/fujitsu.key >/dev/null 2>&1
     openssl req -new -x509 -days 3650 -key /opt/suoha_quick/cert/fujitsu.key \
         -out /opt/suoha_quick/cert/fujitsu.crt \
-        -subj "/C=JP/ST=Tokyo/L=Minato-ku/O=Fujitsu Limited/CN=${self_sni}" \
-        -addext "subjectAltName=DNS:${self_sni},DNS:fujitsu.com" >/dev/null 2>&1
+        -subj "/C=JP/ST=Tokyo/L=Minato-ku/O=Fujitsu Limited/CN=www.fujitsu.com" \
+        -addext "subjectAltName=DNS:www.fujitsu.com,DNS:fujitsu.com" >/dev/null 2>&1
 
     local reality_keys
     reality_keys=$(/opt/suoha_quick/sing-box generate reality-keypair)
@@ -449,11 +412,11 @@ function quicktunnel_all_in_one() {
       ],
       "tls": {
         "enabled": true,
-        "server_name": "${reality_sni}",
+        "server_name": "www.bing.com",
         "reality": {
           "enabled": true,
           "handshake": {
-            "server": "${reality_sni}",
+            "server": "www.bing.com",
             "server_port": 443
           },
           "private_key": "${reality_priv}",
@@ -479,11 +442,11 @@ function quicktunnel_all_in_one() {
       },
       "tls": {
         "enabled": true,
-        "server_name": "${reality_sni}",
+        "server_name": "www.bing.com",
         "reality": {
           "enabled": true,
           "handshake": {
-            "server": "${reality_sni}",
+            "server": "www.bing.com",
             "server_port": 443
           },
           "private_key": "${reality_priv}",
@@ -516,7 +479,7 @@ function quicktunnel_all_in_one() {
       ],
       "tls": {
         "enabled": true,
-        "server_name": "${self_sni}",
+        "server_name": "www.fujitsu.com",
         "certificate_path": "/opt/suoha_quick/cert/fujitsu.crt",
         "key_path": "/opt/suoha_quick/cert/fujitsu.key"
       }
@@ -806,9 +769,9 @@ EOF
     fi
 
     if [ -n "$direct_host" ]; then
-        # (C1) VLESS Reality Vision 直连节点 (主力首选)
+        # (C1) VLESS Reality Vision 直连节点 (主力首选 - 保留 www.bing.com)
         local pname_rel="${node_tag}-VLESS-Reality-Vision"
-        echo "vless://${uuid}@${direct_host}:${port_reality}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${reality_sni}&fp=chrome&pbk=${reality_pub}&sid=${reality_sid}&type=tcp&headerType=none#${pname_rel}" >> /opt/suoha_quick/nodes.txt
+        echo "vless://${uuid}@${direct_host}:${port_reality}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.bing.com&fp=chrome&pbk=${reality_pub}&sid=${reality_sid}&type=tcp&headerType=none#${pname_rel}" >> /opt/suoha_quick/nodes.txt
         proxy_names+=("$pname_rel")
         cat >> /opt/suoha_quick/clash.yaml <<EOF
   - name: "${pname_rel}"
@@ -820,16 +783,16 @@ EOF
     tls: true
     udp: true
     flow: xtls-rprx-vision
-    servername: ${reality_sni}
+    servername: www.bing.com
     reality-opts:
       public-key: ${reality_pub}
       short-id: ${reality_sid}
       client-fingerprint: chrome
 EOF
 
-        # (C2) VLESS Reality gRPC 直连节点
+        # (C2) VLESS Reality gRPC 直连节点 (保留 www.bing.com)
         local pname_rel_grpc="${node_tag}-VLESS-Reality-gRPC"
-        echo "vless://${uuid}@${direct_host}:${port_rel_grpc}?encryption=none&security=reality&sni=${reality_sni}&fp=chrome&pbk=${reality_pub}&sid=${reality_sid}&type=grpc&serviceName=${grpc_service}&mode=gun#${pname_rel_grpc}" >> /opt/suoha_quick/nodes.txt
+        echo "vless://${uuid}@${direct_host}:${port_rel_grpc}?encryption=none&security=reality&sni=www.bing.com&fp=chrome&pbk=${reality_pub}&sid=${reality_sid}&type=grpc&serviceName=${grpc_service}&mode=gun#${pname_rel_grpc}" >> /opt/suoha_quick/nodes.txt
         proxy_names+=("$pname_rel_grpc")
         cat >> /opt/suoha_quick/clash.yaml <<EOF
   - name: "${pname_rel_grpc}"
@@ -840,7 +803,7 @@ EOF
     network: grpc
     tls: true
     udp: true
-    servername: ${reality_sni}
+    servername: www.bing.com
     grpc-opts:
       grpc-service-name: ${grpc_service}
     reality-opts:
@@ -851,7 +814,7 @@ EOF
 
         # (D) AnyTLS 直连节点 (自签 www.fujitsu.com)
         local pname_any="${node_tag}-AnyTLS-Fujitsu"
-        echo "anytls://${password_all}@${direct_host}:${port_anytls}?sni=${self_sni}&insecure=1#${pname_any}" >> /opt/suoha_quick/nodes.txt
+        echo "anytls://${password_all}@${direct_host}:${port_anytls}?sni=www.fujitsu.com&insecure=1#${pname_any}" >> /opt/suoha_quick/nodes.txt
         proxy_names+=("$pname_any")
         cat >> /opt/suoha_quick/clash.yaml <<EOF
   - name: "${pname_any}"
@@ -861,13 +824,13 @@ EOF
     password: "${password_all}"
     client-fingerprint: chrome
     udp: true
-    sni: ${self_sni}
+    sni: www.fujitsu.com
     skip-cert-verify: true
 EOF
 
         # (E) Hysteria2 直连节点 (自签 www.fujitsu.com)
         local pname_hy2="${node_tag}-Hysteria2-Fujitsu"
-        echo "hysteria2://${password_all}@${direct_host}:${port_hy2}?sni=${self_sni}&insecure=1#${pname_hy2}" >> /opt/suoha_quick/nodes.txt
+        echo "hysteria2://${password_all}@${direct_host}:${port_hy2}?sni=www.fujitsu.com&insecure=1#${pname_hy2}" >> /opt/suoha_quick/nodes.txt
         proxy_names+=("$pname_hy2")
         cat >> /opt/suoha_quick/clash.yaml <<EOF
   - name: "${pname_hy2}"
@@ -875,7 +838,7 @@ EOF
     server: ${direct_yaml_host}
     port: ${port_hy2}
     password: "${password_all}"
-    sni: ${self_sni}
+    sni: www.fujitsu.com
     skip-cert-verify: true
     alpn:
       - h3
@@ -883,7 +846,7 @@ EOF
 
         # (F) TUIC v5 直连节点 (自签 www.fujitsu.com)
         local pname_tuic="${node_tag}-TUICv5-Fujitsu"
-        echo "tuic://${uuid}:${password_all}@${direct_host}:${port_tuic}?congestion_control=bbr&alpn=h3&sni=${self_sni}&udp_relay_mode=native&allow_insecure=1#${pname_tuic}" >> /opt/suoha_quick/nodes.txt
+        echo "tuic://${uuid}:${password_all}@${direct_host}:${port_tuic}?congestion_control=bbr&alpn=h3&sni=www.fujitsu.com&udp_relay_mode=native&allow_insecure=1#${pname_tuic}" >> /opt/suoha_quick/nodes.txt
         proxy_names+=("$pname_tuic")
         cat >> /opt/suoha_quick/clash.yaml <<EOF
   - name: "${pname_tuic}"
@@ -898,7 +861,7 @@ EOF
     reduce-rtt: true
     udp-relay-mode: native
     congestion-controller: bbr
-    sni: ${self_sni}
+    sni: www.fujitsu.com
     skip-cert-verify: true
 EOF
     fi
@@ -1025,9 +988,9 @@ $(echo -e "${snell_display_lines:-未检测到可用公网 IP，跳过 Snell 生
 ======================== 端口与证书说明 ========================
 - Argo 节点 443 端口可按需替换为 CF 其它 TLS 端口: 2053, 2083, 2087, 2096, 8443
 
-- AnyTLS / Hysteria2 / TUIC 均已自动签发 ${self_sni} 证书 (客户端需开启跳过证书验证)
+- AnyTLS / Hysteria2 / TUIC 均已自动签发 www.fujitsu.com 证书 (客户端需开启跳过证书验证)
 
-- VLESS Reality 自动竞速择优 -> 伪装域名: ${reality_sni} (握手:${reality_sni_rtt}s) | PublicKey: ${reality_pub} | ShortID: ${reality_sid}
+- VLESS Reality 共用参数 -> 伪装域名: www.bing.com | PublicKey: ${reality_pub} | ShortID: ${reality_sid}
 
   ├─ Reality Vision 端口: ${port_reality}
   └─ Reality gRPC   端口: ${port_rel_grpc} (ServiceName: ${grpc_service})
