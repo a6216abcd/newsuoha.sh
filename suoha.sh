@@ -48,15 +48,13 @@ if [ $n -eq 5 ]; then
     n=0
 fi
 
-# 针对 1080P / 4K 高码率视频流媒体进行 TCP & UDP 内核级网络优化 (自动适配内存大小防 OOM)
+# 针对 1080P / 4K 高码率视频流媒体进行纯净安全的 TCP & UDP 内核级网络优化 (不干扰端口段与 TLS 握手)
 function optimize_network_4k() {
     show_progress 2 "正在执行 TCP/UDP 1080P/4K 流媒体与 BBR 内核级网络优化..."
 
     modprobe tcp_bbr >/dev/null 2>&1
-    modprobe nf_conntrack >/dev/null 2>&1
     ulimit -n 1048576 >/dev/null 2>&1
 
-    # 根据当前物理内存自适应计算最大 Socket 缓冲区 (小于 512MB 用 8MB，否则用 32MB)
     local total_mem_mb
     total_mem_mb=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo 2>/dev/null)
     local max_buf=33554432
@@ -70,54 +68,29 @@ function optimize_network_4k() {
         mkdir -p /etc/sysctl.d >/dev/null 2>&1
         cat > /etc/sysctl.d/99-suoha-4k.conf <<EOF
 # === OneKey Suoha 1080P / 4K Video Streaming TCP & UDP Optimization ===
-# 1. BBR 拥塞控制与 FQ 队列调度 (最大化跨洋大带宽吞吐与抗丢包能力)
+# 1. BBR 拥塞控制与 FQ 队列调度
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
 
-# 2. TCP / UDP 读写缓冲区窗口扩容 (喂饱 1080P / 4K 60fps 高 BDP 视频流)
+# 2. TCP / UDP 读写缓冲区窗口扩容 (适配 1080P / 4K 60fps 高码率视频流)
 net.core.rmem_default = ${def_buf}
 net.core.wmem_default = ${def_buf}
 net.core.rmem_max = ${max_buf}
 net.core.wmem_max = ${max_buf}
-net.ipv4.tcp_rmem = 4096 ${def_buf} ${max_buf}
-net.ipv4.tcp_wmem = 4096 ${def_buf} ${max_buf}
+net.ipv4.tcp_rmem = 4096 87380 ${max_buf}
+net.ipv4.tcp_wmem = 4096 65536 ${max_buf}
 
 # 3. UDP / QUIC (Hysteria2 / TUIC v5) 突发高码率队列防丢包
-net.ipv4.udp_rmem_min = 65536
-net.ipv4.udp_wmem_min = 65536
+net.ipv4.udp_rmem_min = 16384
+net.ipv4.udp_wmem_min = 16384
 net.core.netdev_max_backlog = 16384
 net.core.somaxconn = 8192
 net.ipv4.tcp_max_syn_backlog = 8192
 
-# 4. 视频暂停恢复防降速、MTU 路径黑洞探测与低延迟握手优化
+# 4. 视频暂停恢复防降速 (保持安全默认握手机制，不抢占监听端口段)
 net.ipv4.tcp_slow_start_after_idle = 0
-net.ipv4.tcp_mtu_probing = 1
-net.ipv4.tcp_fastopen = 3
-net.ipv4.tcp_tw_reuse = 1
-net.ipv4.tcp_fin_timeout = 15
-net.ipv4.tcp_keepalive_time = 300
-net.ipv4.tcp_keepalive_intvl = 30
-net.ipv4.tcp_keepalive_probes = 3
-net.ipv4.ip_local_port_range = 1024 65535
-
-# 5. 高并发连接跟踪表调优 (兼容多路并发分片且防断流)
-net.netfilter.nf_conntrack_max = 262144
-net.netfilter.nf_conntrack_udp_timeout = 60
-net.netfilter.nf_conntrack_udp_timeout_stream = 180
 EOF
         sysctl -p /etc/sysctl.d/99-suoha-4k.conf >/dev/null 2>&1 || sysctl --system >/dev/null 2>&1
-    fi
-
-    if [ -w /etc/security/limits.conf ]; then
-        if ! grep -q "suoha-4k-nofile" /etc/security/limits.conf 2>/dev/null; then
-            cat >> /etc/security/limits.conf <<'EOF'
-# suoha-4k-nofile
-* soft nofile 1048576
-* hard nofile 1048576
-root soft nofile 1048576
-root hard nofile 1048576
-EOF
-        fi
     fi
 }
 
@@ -630,7 +603,7 @@ import asyncio
 async def relay(reader, writer):
     try:
         while True:
-            chunk = await reader.read(65536)
+            chunk = await reader.read(32768)
             if not chunk:
                 break
             writer.write(chunk)
@@ -844,7 +817,7 @@ EOF
     fi
 
     if [ -n "$direct_host" ]; then
-        # (C1) VLESS Reality Vision 直连节点 (主力首选)
+        # (C1) VLESS Reality Vision 直连节点 (主力首选 - 严格保持 4 空格缩进)
         local pname_rel="${node_tag}-VLESS-Reality-Vision"
         echo "vless://${uuid}@${direct_host}:${port_reality}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.bing.com&fp=chrome&pbk=${reality_pub}&sid=${reality_sid}&type=tcp&headerType=none#${pname_rel}" >> /opt/suoha_quick/nodes.txt
         proxy_names+=("$pname_rel")
@@ -861,11 +834,11 @@ EOF
     servername: www.bing.com
     reality-opts:
       public-key: ${reality_pub}
-      short-id: ${reality_sid}
-      client-fingerprint: chrome
+      short-id: "${reality_sid}"
+    client-fingerprint: chrome
 EOF
 
-        # (C2) VLESS Reality gRPC 直连节点
+        # (C2) VLESS Reality gRPC 直连节点 (严格保持 4 空格缩进)
         local pname_rel_grpc="${node_tag}-VLESS-Reality-gRPC"
         echo "vless://${uuid}@${direct_host}:${port_rel_grpc}?encryption=none&security=reality&sni=www.bing.com&fp=chrome&pbk=${reality_pub}&sid=${reality_sid}&type=grpc&serviceName=${grpc_service}&mode=gun#${pname_rel_grpc}" >> /opt/suoha_quick/nodes.txt
         proxy_names+=("$pname_rel_grpc")
@@ -883,8 +856,8 @@ EOF
       grpc-service-name: ${grpc_service}
     reality-opts:
       public-key: ${reality_pub}
-      short-id: ${reality_sid}
-      client-fingerprint: chrome
+      short-id: "${reality_sid}"
+    client-fingerprint: chrome
 EOF
 
         # (D) AnyTLS 直连节点 (自签 www.bing.com)
