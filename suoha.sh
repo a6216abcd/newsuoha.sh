@@ -1,5 +1,5 @@
 #!/bin/bash
-# onekey suoha - Full Protocol Edition (1080P/4K TCP+UDP内核优化 + 官方Sing-box主力 + 单Argo双路径 + Reality[Vision/gRPC] + AnyTLS + HY2 + TUIC + Snell双栈 + SS-IPv6)
+# onekey suoha - Full Protocol Edition (全链路0-RTT + 1080P/4K内核优化 + 官方Sing-box主力 + 单Argo双路径 + Reality[Vision/gRPC] + AnyTLS + HY2 + TUIC + Snell双栈 + SS-IPv6)
 
 export PATH=$PATH:/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin
 
@@ -48,9 +48,9 @@ if [ $n -eq 5 ]; then
     n=0
 fi
 
-# 针对 1080P / 4K 高码率视频流媒体进行纯净安全的 TCP & UDP 内核级网络优化 (不干扰端口段与 TLS 握手)
+# 针对 1080P / 4K 高码率视频流媒体与 0-RTT TCP Fast Open 进行内核级网络优化
 function optimize_network_4k() {
-    show_progress 2 "正在执行 TCP/UDP 1080P/4K 流媒体与 BBR 内核级网络优化..."
+    show_progress 2 "正在执行 TCP/UDP 1080P/4K 流媒体、BBR 与 TCP Fast Open (0-RTT) 内核优化..."
 
     modprobe tcp_bbr >/dev/null 2>&1
     ulimit -n 1048576 >/dev/null 2>&1
@@ -67,12 +67,15 @@ function optimize_network_4k() {
     if [ -w /etc ] && [ -w /proc/sys ]; then
         mkdir -p /etc/sysctl.d >/dev/null 2>&1
         cat > /etc/sysctl.d/99-suoha-4k.conf <<EOF
-# === OneKey Suoha 1080P / 4K Video Streaming TCP & UDP Optimization ===
+# === OneKey Suoha 1080P / 4K Video Streaming & 0-RTT Optimization ===
 # 1. BBR 拥塞控制与 FQ 队列调度
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
 
-# 2. TCP / UDP 读写缓冲区窗口扩容 (适配 1080P / 4K 60fps 高码率视频流)
+# 2. 开启 TCP Fast Open (0-RTT 服务端与客户端双向支持)
+net.ipv4.tcp_fastopen = 3
+
+# 3. TCP / UDP 读写缓冲区窗口扩容 (适配 1080P / 4K 60fps 高码率视频流)
 net.core.rmem_default = ${def_buf}
 net.core.wmem_default = ${def_buf}
 net.core.rmem_max = ${max_buf}
@@ -80,14 +83,14 @@ net.core.wmem_max = ${max_buf}
 net.ipv4.tcp_rmem = 4096 87380 ${max_buf}
 net.ipv4.tcp_wmem = 4096 65536 ${max_buf}
 
-# 3. UDP / QUIC (Hysteria2 / TUIC v5) 突发高码率队列防丢包
+# 4. UDP / QUIC (Hysteria2 / TUIC v5) 突发高码率队列防丢包
 net.ipv4.udp_rmem_min = 16384
 net.ipv4.udp_wmem_min = 16384
 net.core.netdev_max_backlog = 16384
 net.core.somaxconn = 8192
 net.ipv4.tcp_max_syn_backlog = 8192
 
-# 4. 视频暂停恢复防降速 (保持安全默认握手机制，不抢占监听端口段)
+# 5. 视频暂停恢复防降速 (保持安全默认握手机制，不抢占监听端口段)
 net.ipv4.tcp_slow_start_after_idle = 0
 EOF
         sysctl -p /etc/sysctl.d/99-suoha-4k.conf >/dev/null 2>&1 || sysctl --system >/dev/null 2>&1
@@ -276,7 +279,7 @@ fi
 function quicktunnel_all_in_one() {
     clear
     echo -e "${CYAN}==================================================================${NC}"
-    echo -e "${GREEN}   一键全协议梭哈部署启动中 (4K内核调优 + Sing-box + 单Argo + Snell + SS)${NC}"
+    echo -e "${GREEN}   一键全协议梭哈部署启动中 (全链路0-RTT + 4K内核调优 + Sing-box + 单Argo + Snell + SS)${NC}"
     echo -e "${CYAN}==================================================================${NC}\n"
 
     show_progress 1 "初始化运行环境并彻底清空旧进程与历史文件..."
@@ -408,8 +411,8 @@ function quicktunnel_all_in_one() {
     open_firewall_port "$port_snell"
     open_firewall_port "$port_ss_v6"
 
-    # 5. 生成官方 Sing-box 主力全协议配置文件 (已暂时屏蔽/移除 XHTTP 节点)
-    show_progress 58 "正在写入官方 Sing-box 主力全协议配置..."
+    # 5. 生成官方 Sing-box 主力全协议配置文件 (开启 WS 0-RTT EarlyData 与 TUIC 0-RTT Handshake)
+    show_progress 58 "正在写入官方 Sing-box 全协议配置 (已开启 0-RTT 支持)..."
     cat > /opt/suoha_quick/singbox.json <<EOF
 {
   "log": {
@@ -429,7 +432,9 @@ function quicktunnel_all_in_one() {
       ],
       "transport": {
         "type": "ws",
-        "path": "/${urlpath_vless}"
+        "path": "/${urlpath_vless}",
+        "max_early_data": 2048,
+        "early_data_header_name": "Sec-WebSocket-Protocol"
       }
     },
     {
@@ -444,7 +449,9 @@ function quicktunnel_all_in_one() {
       ],
       "transport": {
         "type": "ws",
-        "path": "/${urlpath_trojan}"
+        "path": "/${urlpath_trojan}",
+        "max_early_data": 2048,
+        "early_data_header_name": "Sec-WebSocket-Protocol"
       }
     },
     {
@@ -452,6 +459,7 @@ function quicktunnel_all_in_one() {
       "tag": "vless-reality-in",
       "listen": "::",
       "listen_port": ${port_reality},
+      "tcp_fast_open": true,
       "users": [
         {
           "uuid": "${uuid}",
@@ -479,6 +487,7 @@ function quicktunnel_all_in_one() {
       "tag": "vless-reality-grpc-in",
       "listen": "::",
       "listen_port": ${port_rel_grpc},
+      "tcp_fast_open": true,
       "users": [
         {
           "uuid": "${uuid}"
@@ -509,6 +518,7 @@ function quicktunnel_all_in_one() {
       "tag": "anytls-in",
       "listen": "::",
       "listen_port": ${port_anytls},
+      "tcp_fast_open": true,
       "users": [
         {
           "password": "${password_all}"
@@ -563,7 +573,7 @@ function quicktunnel_all_in_one() {
         }
       ],
       "congestion_control": "bbr",
-      "zero_rtt_handshake": false,
+      "zero_rtt_handshake": true,
       "tls": {
         "enabled": true,
         "alpn": [
@@ -578,6 +588,7 @@ function quicktunnel_all_in_one() {
       "tag": "ss-ipv6-in",
       "listen": "::",
       "listen_port": ${port_ss_v6},
+      "tcp_fast_open": true,
       "method": "${ss_method}",
       "password": "${ss_password}"
     }
@@ -596,7 +607,7 @@ EOF
     local sb_pid=$!
     echo $sb_pid > /opt/suoha_quick/singbox.pid
 
-    # 轻量本地 WebSocket 路径分流守护进程 (单 Argo 域名按请求路径分发 /vl-xxx 与 /tr-xxx)
+    # 轻量本地 WebSocket 路径分流守护进程 (支持带 ?ed=2048 的 0-RTT WebSocket 请求路径匹配)
     cat > /opt/suoha_quick/argo_router.py <<EOF
 import asyncio
 
@@ -647,7 +658,7 @@ EOF
     nohup python3 /opt/suoha_quick/argo_router.py >/dev/null 2>&1 &
     echo $! > /opt/suoha_quick/argo_router.pid
 
-    # 启动 Snell 双栈监听 (使用 ::0:端口 语法确保 IPv4 + IPv6 同步监听)
+    # 启动 Snell 双栈监听
     local snell_psk
     snell_psk=$(openssl rand -base64 24 | tr -dc 'a-zA-Z0-9' | head -c 24)
     local snell_installed=0
@@ -735,8 +746,8 @@ EOF
         fi
     done
 
-    # 7. 生成全协议节点链接与 Clash / Mihomo 配置文件
-    show_progress 95 "正在生成全协议 URI 链接与 Clash/Mihomo 聚合配置..."
+    # 7. 生成全协议节点链接与 Clash / Mihomo 配置文件 (全面启用 0-RTT: ?ed=2048 / max-early-data / reduce-rtt / tfo)
+    show_progress 95 "正在生成全链路 0-RTT URI 链接与 Clash/Mihomo 聚合配置..."
     > /opt/suoha_quick/nodes.txt
     > /opt/suoha_quick/surge.conf
 
@@ -757,12 +768,12 @@ EOF
     local argo_domains=("$argo_domain" "${opt_domains[@]}")
     local argo_labels=("默认Argo" "${opt_labels[@]}")
 
-    # (A) VLESS Argo 节点组
+    # (A) VLESS Argo 节点组 (通用链接 path 携带 %3Fed%3D2048，Clash 开启 max-early-data: 2048 0-RTT)
     for idx in "${!argo_domains[@]}"; do
         local d="${argo_domains[$idx]}"
         local l="${argo_labels[$idx]}"
         local pname="${node_tag}-VLESS-${l}-443"
-        echo "vless://${uuid}@${d}:443?encryption=none&security=tls&sni=${argo_domain}&type=ws&host=${argo_domain}&path=%2F${urlpath_vless}#${pname}" >> /opt/suoha_quick/nodes.txt
+        echo "vless://${uuid}@${d}:443?encryption=none&security=tls&sni=${argo_domain}&type=ws&host=${argo_domain}&path=%2F${urlpath_vless}%3Fed%3D2048#${pname}" >> /opt/suoha_quick/nodes.txt
         proxy_names+=("$pname")
         cat >> /opt/suoha_quick/clash.yaml <<EOF
   - name: "${pname}"
@@ -773,21 +784,24 @@ EOF
     cipher: auto
     tls: true
     udp: true
+    tfo: true
     servername: ${argo_domain}
     network: ws
     ws-opts:
       path: /${urlpath_vless}
+      max-early-data: 2048
+      early-data-header-name: Sec-WebSocket-Protocol
       headers:
         Host: ${argo_domain}
 EOF
     done
 
-    # (B) Trojan Argo 节点组
+    # (B) Trojan Argo 节点组 (通用链接 path 携带 %3Fed%3D2048，Clash 开启 max-early-data: 2048 0-RTT)
     for idx in "${!argo_domains[@]}"; do
         local d="${argo_domains[$idx]}"
         local l="${argo_labels[$idx]}"
         local pname="${node_tag}-Trojan-${l}-443"
-        echo "trojan://${uuid}@${d}:443?security=tls&sni=${argo_domain}&type=ws&host=${argo_domain}&path=%2F${urlpath_trojan}#${pname}" >> /opt/suoha_quick/nodes.txt
+        echo "trojan://${uuid}@${d}:443?security=tls&sni=${argo_domain}&type=ws&host=${argo_domain}&path=%2F${urlpath_trojan}%3Fed%3D2048#${pname}" >> /opt/suoha_quick/nodes.txt
         proxy_names+=("$pname")
         cat >> /opt/suoha_quick/clash.yaml <<EOF
   - name: "${pname}"
@@ -796,10 +810,13 @@ EOF
     port: 443
     password: ${uuid}
     udp: true
+    tfo: true
     sni: ${argo_domain}
     network: ws
     ws-opts:
       path: /${urlpath_trojan}
+      max-early-data: 2048
+      early-data-header-name: Sec-WebSocket-Protocol
       headers:
         Host: ${argo_domain}
 EOF
@@ -817,9 +834,9 @@ EOF
     fi
 
     if [ -n "$direct_host" ]; then
-        # (C1) VLESS Reality Vision 直连节点 (主力首选 - 严格保持 4 空格缩进)
+        # (C1) VLESS Reality Vision 直连节点 (开启 tfo: true 0-RTT)
         local pname_rel="${node_tag}-VLESS-Reality-Vision"
-        echo "vless://${uuid}@${direct_host}:${port_reality}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.bing.com&fp=chrome&pbk=${reality_pub}&sid=${reality_sid}&type=tcp&headerType=none#${pname_rel}" >> /opt/suoha_quick/nodes.txt
+        echo "vless://${uuid}@${direct_host}:${port_reality}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.bing.com&fp=chrome&pbk=${reality_pub}&sid=${reality_sid}&type=tcp&headerType=none&tfo=1#${pname_rel}" >> /opt/suoha_quick/nodes.txt
         proxy_names+=("$pname_rel")
         cat >> /opt/suoha_quick/clash.yaml <<EOF
   - name: "${pname_rel}"
@@ -830,6 +847,7 @@ EOF
     network: tcp
     tls: true
     udp: true
+    tfo: true
     flow: xtls-rprx-vision
     servername: www.bing.com
     reality-opts:
@@ -838,9 +856,9 @@ EOF
     client-fingerprint: chrome
 EOF
 
-        # (C2) VLESS Reality gRPC 直连节点 (严格保持 4 空格缩进)
+        # (C2) VLESS Reality gRPC 直连节点 (开启 tfo: true 0-RTT)
         local pname_rel_grpc="${node_tag}-VLESS-Reality-gRPC"
-        echo "vless://${uuid}@${direct_host}:${port_rel_grpc}?encryption=none&security=reality&sni=www.bing.com&fp=chrome&pbk=${reality_pub}&sid=${reality_sid}&type=grpc&serviceName=${grpc_service}&mode=gun#${pname_rel_grpc}" >> /opt/suoha_quick/nodes.txt
+        echo "vless://${uuid}@${direct_host}:${port_rel_grpc}?encryption=none&security=reality&sni=www.bing.com&fp=chrome&pbk=${reality_pub}&sid=${reality_sid}&type=grpc&serviceName=${grpc_service}&mode=gun&tfo=1#${pname_rel_grpc}" >> /opt/suoha_quick/nodes.txt
         proxy_names+=("$pname_rel_grpc")
         cat >> /opt/suoha_quick/clash.yaml <<EOF
   - name: "${pname_rel_grpc}"
@@ -851,6 +869,7 @@ EOF
     network: grpc
     tls: true
     udp: true
+    tfo: true
     servername: www.bing.com
     grpc-opts:
       grpc-service-name: ${grpc_service}
@@ -860,9 +879,9 @@ EOF
     client-fingerprint: chrome
 EOF
 
-        # (D) AnyTLS 直连节点 (自签 www.bing.com)
+        # (D) AnyTLS 直连节点 (自签 www.bing.com + tfo: true)
         local pname_any="${node_tag}-AnyTLS-Bing"
-        echo "anytls://${password_all}@${direct_host}:${port_anytls}?sni=www.bing.com&insecure=1#${pname_any}" >> /opt/suoha_quick/nodes.txt
+        echo "anytls://${password_all}@${direct_host}:${port_anytls}?sni=www.bing.com&insecure=1&tfo=1#${pname_any}" >> /opt/suoha_quick/nodes.txt
         proxy_names+=("$pname_any")
         cat >> /opt/suoha_quick/clash.yaml <<EOF
   - name: "${pname_any}"
@@ -872,6 +891,7 @@ EOF
     password: "${password_all}"
     client-fingerprint: chrome
     udp: true
+    tfo: true
     sni: www.bing.com
     skip-cert-verify: true
 EOF
@@ -892,9 +912,9 @@ EOF
       - h3
 EOF
 
-        # (F) TUIC v5 直连节点 (自签 www.bing.com)
+        # (F) TUIC v5 直连节点 (服务端 zero_rtt_handshake: true + 客户端 reduce_rtt=1 / reduce-rtt: true 0-RTT)
         local pname_tuic="${node_tag}-TUICv5-Bing"
-        echo "tuic://${uuid}:${password_all}@${direct_host}:${port_tuic}?congestion_control=bbr&alpn=h3&sni=www.bing.com&udp_relay_mode=native&allow_insecure=1#${pname_tuic}" >> /opt/suoha_quick/nodes.txt
+        echo "tuic://${uuid}:${password_all}@${direct_host}:${port_tuic}?congestion_control=bbr&alpn=h3&sni=www.bing.com&udp_relay_mode=native&reduce_rtt=1&allow_insecure=1#${pname_tuic}" >> /opt/suoha_quick/nodes.txt
         proxy_names+=("$pname_tuic")
         cat >> /opt/suoha_quick/clash.yaml <<EOF
   - name: "${pname_tuic}"
@@ -914,7 +934,7 @@ EOF
 EOF
     fi
 
-    # (G) 原生 Shadowsocks IPv6 直连节点 (ss-ipv6)
+    # (G) 原生 Shadowsocks IPv6 直连节点 (ss-ipv6 + tfo: true)
     local ss_v6_uri=""
     if [ -n "$server_ipv6" ]; then
         local ss_user_info="${ss_method}:${ss_password}"
@@ -925,7 +945,7 @@ EOF
             ss_base64=$(echo -n "$ss_user_info" | base64 -w 0)
         fi
         local pname_ss6="${node_tag}-SS-IPv6"
-        ss_v6_uri="ss://${ss_base64}@[${server_ipv6}]:${port_ss_v6}#${pname_ss6}"
+        ss_v6_uri="ss://${ss_base64}@[${server_ipv6}]:${port_ss_v6}?tfo=1#${pname_ss6}"
         echo "$ss_v6_uri" >> /opt/suoha_quick/nodes.txt
         proxy_names+=("$pname_ss6")
         cat >> /opt/suoha_quick/clash.yaml <<EOF
@@ -936,10 +956,11 @@ EOF
     cipher: ${ss_method}
     password: "${ss_password}"
     udp: true
+    tfo: true
 EOF
     fi
 
-    # (H) Snell 双栈节点
+    # (H) Snell 双栈节点 (tfo: true / tfo=true)
     local snell_display_lines=""
     if [ $snell_installed -eq 1 ]; then
         if [ -n "$server_ip" ]; then
@@ -953,8 +974,9 @@ EOF
     psk: "${snell_psk}"
     version: 4
     udp: true
+    tfo: true
 EOF
-            local surge_v4="${pname_snell_v4} = snell, ${server_ip}, ${port_snell}, psk=${snell_psk}, version=4, reuse=true"
+            local surge_v4="${pname_snell_v4} = snell, ${server_ip}, ${port_snell}, psk=${snell_psk}, version=4, reuse=true, tfo=true"
             echo "$surge_v4" >> /opt/suoha_quick/surge.conf
             snell_display_lines+="${surge_v4}\n"
         fi
@@ -971,8 +993,9 @@ EOF
     psk: "${snell_psk}"
     version: 4
     udp: true
+    tfo: true
 EOF
-            local surge_v6="${pname_snell_v6} = snell, ${server_ipv6}, ${port_snell}, psk=${snell_psk}, version=4, reuse=true"
+            local surge_v6="${pname_snell_v6} = snell, ${server_ipv6}, ${port_snell}, psk=${snell_psk}, version=4, reuse=true, tfo=true"
             echo "$surge_v6" >> /opt/suoha_quick/surge.conf
             snell_display_lines+="${surge_v6}\n"
         fi
@@ -1022,17 +1045,21 @@ EOF
     cc_active=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "default")
     local qdisc_active
     qdisc_active=$(sysctl -n net.core.default_qdisc 2>/dev/null || echo "default")
+    local tfo_active
+    tfo_active=$(sysctl -n net.ipv4.tcp_fastopen 2>/dev/null || echo "0")
+    local rmem_mb
+    rmem_mb=$(awk '{printf "%.0f", $1/1048576}' /proc/sys/net/core/rmem_max 2>/dev/null || echo "32")
 
     cat > /opt/suoha_quick/v2ray.txt <<EOF
 ======================== 一键全协议梭哈节点列表 ========================
 [核心运行状态]:
-  ├─ 1080P/4K 内核网络调优 : 拥塞控制=${cc_active} | 队列=${qdisc_active} | 缓冲上限=$((max_buf/1048576))MB
-  ├─ 官方 Sing-box 主力进程 : ${sb_status}
+  ├─ 1080P/4K 内核网络调优 : 拥塞控制=${cc_active} | 队列=${qdisc_active} | 缓冲上限=${rmem_mb}MB | TFO=${tfo_active}
+  ├─ 官方 Sing-box 主力进程 : ${sb_status} (已启用 WS EarlyData 2048 & TUIC 0-RTT)
   └─ Snell 双栈守护进程    : ${snell_status}
 
 [单 Argo 共用域名]: ${argo_domain}
-  ├─ VLESS  WebSocket 路径: /${urlpath_vless}
-  └─ Trojan WebSocket 路径: /${urlpath_trojan}
+  ├─ VLESS  WebSocket 路径: /${urlpath_vless}?ed=2048 (0-RTT)
+  └─ Trojan WebSocket 路径: /${urlpath_trojan}?ed=2048 (0-RTT)
 
 [URI 通用节点链接 (Argo / Reality[Vision/gRPC] / AnyTLS / HY2 / TUIC / SS-IPv6)]
 $(cat /opt/suoha_quick/nodes.txt)
@@ -1040,22 +1067,18 @@ $(cat /opt/suoha_quick/nodes.txt)
 [Snell 双栈专属配置 (Surge / Clash Verge / Mihomo)]
 $(echo -e "${snell_display_lines:-未检测到可用公网 IP，跳过 Snell 生成}")
 ======================== 端口与证书说明 ========================
+- 全链路 0-RTT 已启用: WS EarlyData=2048 / TUIC 0-RTT Handshake / TCP Fast Open (TFO)
 - Argo 节点 443 端口可按需替换为 CF 其它 TLS 端口: 2053, 2083, 2087, 2096, 8443
-
 - AnyTLS / Hysteria2 / TUIC 均已自动签发 www.bing.com 证书 (客户端需开启跳过证书验证)
-
 - VLESS Reality 共用参数 -> 伪装域名: www.bing.com | PublicKey: ${reality_pub} | ShortID: ${reality_sid}
-
   ├─ Reality Vision 端口: ${port_reality}
   └─ Reality gRPC   端口: ${port_rel_grpc} (ServiceName: ${grpc_service})
 - (注: XHTTP 节点已暂时屏蔽，等待官方内核原生支持)
-
 
 ======================== 客户端订阅及导入链接 ========================
 本机固定订阅服务端口: ${sub_port} (已永久保存，重新梭哈无需重新导入客户端)
 
 1. 通用在线订阅链接 (v2rayN / NekoBox / Shadowrocket / Karing):
-
 ${sub_online_url}
 
 2. v2rayN / NekoBox 一键导入链接:
