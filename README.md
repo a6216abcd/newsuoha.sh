@@ -1,8 +1,6 @@
+# New-Suoha: 全协议一键梭哈部署脚本 (全链路0-RTT + 4K内核调优 + Sing-box主力 + 单Argo双路径 + Snell双栈 + SS-IPv6)
 
-
-# New-Suoha: 全协议一键梭哈部署脚本 (4K内核调优 + Sing-box主力 + 单Argo双路径 + Snell + SS-IPv6)
-
-轻量、极速、零交互、开箱即用的全协议代理一键部署脚本。在部署代理节点前自动应用 **1080P / 4K 高码率视频流媒体 TCP & UDP 内核级网络调优**，并基于 **官方原版 Sing-box 核心** 与 **Cloudflare Argo 临时隧道**，结合轻量级异步路由分发器与 **Snell v4** 官方服务端，一条命令即可在主流 Linux VPS 上全自动部署 **9 种主流直连与 CDN 隧道协议**。内置**永久固定订阅端口**托管服务，支持订阅无缝刷新及主流客户端一键导入。
+轻量、极速、全自动零交互、开箱即用的全协议代理一键部署脚本。每次运行前自动彻底清理旧进程与历史残留，前置应用 **1080P / 4K 高码率视频流媒体 TCP & UDP 与全链路 0-RTT 内核级网络调优**，基于 **官方原版 Sing-box 核心** 与 **Cloudflare Argo 临时隧道**，结合轻量级异步路径分发器与 **Snell v4** 官方双栈服务端，一条命令即可在主流 Linux VPS 上全自动部署 **9 种主流直连与 CDN 隧道协议**。内置**永久固定订阅端口**托管服务，重新梭哈后客户端无需重新导入，直接刷新订阅即可无缝切换。
 
 ---
 
@@ -20,26 +18,31 @@
 
 ## 核心特性
 
+- **全链路 0-RTT 极速握手加速（VPS 服务端 + 通用订阅 + Clash 订阅全覆盖）**：
+  - **WebSocket 0-RTT (`EarlyData 2048`)**：Sing-box 服务端启用 `max_early_data: 2048` 与 `Sec-WebSocket-Protocol` 头部承载；通用 URI 订阅链接自动附加 `?ed=2048`，`clash.yaml` 自动写入 `max-early-data: 2048`，首包即传输有效载荷；
+  - **QUIC 0-RTT (`TUIC v5`)**：服务端开启 `zero_rtt_handshake: true`，通用链接自动附加 `reduce_rtt=1`，`clash.yaml` 同步开启 `reduce-rtt: true`；
+  - **TCP Fast Open (`TFO 0-RTT`)**：Linux 内核写入 `net.ipv4.tcp_fastopen = 3` 双向开启服务端与客户端支持，Sing-box 入站开启 `tcp_fast_open: true`，通用直连链接附加 `tfo=1`，`clash.yaml` 与 Surge 配置全量开启 `tfo: true`。
+
 - **前置 1080P / 4K 视频流媒体 TCP & UDP 内核级调优**：
   - 部署前自动写入 `/etc/sysctl.d/99-suoha-4k.conf` 并即时生效（卸载时自动清理）；
   - 强制开启 **BBR 拥塞控制 + FQ 公平队列调度**，显著提升跨洋高延迟链路的大码率吞吐与抗丢包能力；
   - **内存自适应读写缓冲窗口**：自动识别 VPS 物理内存（小于 `512MB` 机型启用 `8MB` 安全缓冲防 OOM，大于等于 `512MB` 机型启用 `32MB` 大窗口缓冲），充分喂饱 4K 60fps 视频流的高 BDP 窗口；
-  - 针对 **UDP / QUIC**（Hysteria2 / TUIC v5）增大收发队列与 `netdev_max_backlog` 防止突发丢包，关闭 `tcp_slow_start_after_idle` 避免视频暂停恢复播放时降速，开启 `tcp_mtu_probing` 自动规避路由黑洞分片。
+  - 针对 **UDP / QUIC**（Hysteria2 / TUIC v5）增大收发队列与 `netdev_max_backlog` 防止突发丢包，关闭 `tcp_slow_start_after_idle` 避免视频暂停恢复播放时降速。
 
 - **多架构与多系统适配**：原生支持 `x86_64`、`arm64`、`armv7l`、`i386` 架构；全面适配 Debian、Ubuntu、CentOS、Fedora 及 Alpine Linux。
 
-- **全自动零交互部署**：无需手动输入参数或准备自有域名，脚本自动探测公网 IPv4 / IPv6 双栈环境、自动签发 `www.bing.com` 自签名 TLS 证书与 Reality X25519 密钥对，并自动放行系统防火墙 (`ufw` / `firewalld` / `iptables` / `ip6tables`)。
+- **全自动零交互部署 & 运行前自动清理**：无需任何手动输入，脚本执行时自动清理旧代理进程与缓存文件、自动探测公网 IPv4 / IPv6 双栈环境、自动签发 `www.bing.com` 自签名 TLS 证书与 Reality X25519 密钥对，并自动放行系统防火墙 (`ufw` / `firewalld` / `iptables` / `ip6tables`)。
 
-- **单 Argo 隧道双路径复用**：通过内置的轻量级 Python `asyncio` 本地分流守护进程（`64KB` 高速转发缓冲），仅申请一条 `*.trycloudflare.com` 临时隧道即可按路径同时分发 **VLESS-WS** (`/vl-xxx`) 与 **Trojan-WS** (`/tr-xxx`) 双协议；内置 HTTP/2 与 QUIC 超时自动切换重连机制，并矩阵式生成 **3 组优选域名**（`默认 Argo 域名`、`cf.090227.xyz`、`cloudflare.182682.xyz`）的 443 TLS 节点。
+- **单 Argo 隧道双路径复用**：通过内置的轻量级 Python `asyncio` 本地分流守护进程，仅申请一条 `*.trycloudflare.com` 临时隧道即可按路径同时分发 **VLESS-WS** (`/vl-xxx?ed=2048`) 与 **Trojan-WS** (`/tr-xxx?ed=2048`) 双协议；内置 HTTP/2 与 QUIC 超时自动切换重连机制，并矩阵式生成 **3 组优选域名**（`默认 Argo 域名`、`cf.090227.xyz`、`cloudflare.182682.xyz`）的 443 TLS 节点。
 
 - **全主流直连协议矩阵并发**：在单一官方 Sing-box 进程内原生并发监听以下直连抗封锁与高速协议，同时拉起原生 Snell v4 双栈守护进程：
-  - **VLESS-Reality-Vision** (`xtls-rprx-vision` + `www.bing.com` 伪装，主力首选)
-  - **VLESS-Reality-gRPC** (`gun` 多路复用 + `www.bing.com` 伪装)
-  - **AnyTLS** (动态 Padding 策略 + 自签 `www.bing.com`)
+  - **VLESS-Reality-Vision** (`xtls-rprx-vision` + `www.bing.com` 伪装 + `TFO`，主力首选)
+  - **VLESS-Reality-gRPC** (`gun` 多路复用 + `www.bing.com` 伪装 + `TFO`)
+  - **AnyTLS** (动态 Padding 策略 + 自签 `www.bing.com` + `TFO`)
   - **Hysteria2** (QUIC + `h3` ALPN + 自签 `www.bing.com`)
-  - **TUIC v5** (QUIC + BBR + Native UDP Relay)
-  - **Snell v4 双栈** (原生 `::0` 双栈监听，独立输出 IPv4 与 IPv6 节点配置)
-  - **Shadowsocks IPv6** (`aes-128-gcm`，自动探测 IPv6 输出原生直连节点)
+  - **TUIC v5** (QUIC + BBR + `0-RTT Handshake` + Native UDP Relay)
+  - **Snell v4 双栈** (原生 `::0` 双栈监听，独立输出 IPv4 与 IPv6 节点配置，含 `ip-version: ipv6` 与 `tfo: true`)
+  - **Shadowsocks IPv6** (`aes-128-gcm` + `TFO`，自动探测 IPv6 输出原生直连节点)
   - *(注：XHTTP 入站节点已暂时屏蔽，待官方 Sing-box 稳定版原生完善后同步开放)*
 
 - **永久固定订阅端口（免重复导入）**：
