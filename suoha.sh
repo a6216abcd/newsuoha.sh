@@ -229,6 +229,10 @@ function sync_to_static_web() {
 }
 
 function stop_all_services() {
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl stop mita >/dev/null 2>&1 || true
+    fi
+
     safe_kill_pidfile "/opt/suoha_quick/singbox.pid"
     safe_kill_pidfile "/opt/suoha_quick/cf_main.pid"
     safe_kill_pidfile "/opt/suoha_quick/cf_vl.pid"
@@ -258,6 +262,9 @@ function stop_all_services() {
 function uninstall_all() {
     show_progress 20 "正在停止运行中的全协议代理进程..."
     stop_all_services
+    if command -v dpkg >/dev/null 2>&1 && dpkg -s mita >/dev/null 2>&1; then
+        dpkg -r mita >/dev/null 2>&1 || true
+    fi
     sleep 0.5
     show_progress 60 "正在清理 HTTP 订阅守护进程..."
     if [ -f "/etc/suoha_sub_port" ]; then
@@ -269,7 +276,7 @@ function uninstall_all() {
     fi
     sleep 0.5
     show_progress 90 "正在删除配置文件、内核调优与证书目录..."
-    rm -rf /opt/suoha /opt/suoha_quick /etc/suoha_sub_port /var/www/suoha_sub /usr/bin/suoha /etc/sysctl.d/99-suoha-4k.conf
+    rm -rf /opt/suoha /opt/suoha_quick /etc/suoha_sub_port /var/www/suoha_sub /usr/bin/suoha /etc/sysctl.d/99-suoha-4k.conf /etc/mita /var/run/mita /var/cache/mita
     sysctl --system >/dev/null 2>&1
     show_progress 100 "卸载清理完成！"
     echo -e "\n所有梭哈全协议服务、内核网络调优及订阅文件已彻底清理完成。"
@@ -385,20 +392,40 @@ function quicktunnel_all_in_one() {
     show_progress 40 "正在下载 Brook 服务端..."
     curl -sL "https://github.com/txthinking/brook/releases/latest/download/brook_${arch_brook}" -o /opt/suoha_quick/brook
 
-    show_progress 44 "正在下载 Mieru (mita) 服务端..."
-    local mita_url
-    mita_url=$(curl -s "https://api.github.com/repos/enfein/mieru/releases/latest" | grep -oE "https://github\.com/enfein/mieru/releases/download/[^\"]*mita[^\"]*${arch_mita}\.tar\.gz" | head -n 1)
-    if [ -n "$mita_url" ]; then
-        curl -sL "$mita_url" -o mita.tar.gz
-        if [ -s mita.tar.gz ] && tar -tzf mita.tar.gz >/dev/null 2>&1; then
-            mkdir -p /opt/suoha_quick/tmp_mita
-            tar -xzf mita.tar.gz -C /opt/suoha_quick/tmp_mita >/dev/null 2>&1
-            local mbin
-            mbin=$(find /opt/suoha_quick/tmp_mita -type f -name "mita" | head -n 1)
-            [ -n "$mbin" ] && mv "$mbin" /opt/suoha_quick/mita
-            rm -rf /opt/suoha_quick/tmp_mita
+    show_progress 44 "正在下载并安装 Mieru (mita) 官方服务端..."
+    local mita_bin=""
+    local mita_systemd=0
+    local mita_deb_url
+    mita_deb_url=$(curl -s "https://api.github.com/repos/enfein/mieru/releases/latest" \
+        | grep -oE "https://github\.com/enfein/mieru/releases/download/[^\"]*mita_[^\"]*_${arch_mita}\.deb\"" \
+        | tr -d '"' | head -n 1)
+    if [ -n "$mita_deb_url" ]; then
+        mkdir -p /opt/suoha_quick/tmp_mita
+        curl -sL "$mita_deb_url" -o /opt/suoha_quick/tmp_mita/mita.deb
+        if [ -s /opt/suoha_quick/tmp_mita/mita.deb ]; then
+            if command -v dpkg >/dev/null 2>&1 && command -v systemctl >/dev/null 2>&1; then
+                dpkg -i /opt/suoha_quick/tmp_mita/mita.deb >/dev/null 2>&1 || true
+                if command -v mita >/dev/null 2>&1; then
+                    mita_bin=$(command -v mita)
+                    mita_systemd=1
+                fi
+            fi
+            if [ -z "$mita_bin" ]; then
+                if command -v dpkg-deb >/dev/null 2>&1; then
+                    dpkg-deb -x /opt/suoha_quick/tmp_mita/mita.deb /opt/suoha_quick/tmp_mita/extract >/dev/null 2>&1
+                elif command -v ar >/dev/null 2>&1; then
+                    (cd /opt/suoha_quick/tmp_mita && ar x mita.deb && mkdir -p extract && tar -xf data.tar.* -C extract) >/dev/null 2>&1
+                fi
+                local mbin
+                mbin=$(find /opt/suoha_quick/tmp_mita/extract -type f -name "mita" 2>/dev/null | head -n 1)
+                if [ -n "$mbin" ]; then
+                    mv -f "$mbin" /opt/suoha_quick/mita
+                    chmod +x /opt/suoha_quick/mita
+                    mita_bin="/opt/suoha_quick/mita"
+                fi
+            fi
         fi
-        rm -f mita.tar.gz
+        rm -rf /opt/suoha_quick/tmp_mita
     fi
 
     show_progress 47 "正在下载 Sudoku 服务端..."
@@ -436,7 +463,6 @@ function quicktunnel_all_in_one() {
     [ -f /opt/suoha_quick/snell-server ] && chmod +x /opt/suoha_quick/snell-server
     [ -f /opt/suoha_quick/juicity-server ] && chmod +x /opt/suoha_quick/juicity-server
     [ -f /opt/suoha_quick/brook ] && chmod +x /opt/suoha_quick/brook
-    [ -f /opt/suoha_quick/mita ] && chmod +x /opt/suoha_quick/mita
     [ -f /opt/suoha_quick/sudoku ] && chmod +x /opt/suoha_quick/sudoku
 
     if [ ! -x /opt/suoha_quick/sing-box ] || [ ! -x /opt/suoha_quick/cloudflared-linux ]; then
@@ -856,10 +882,10 @@ EOF
         fi
     fi
 
-    # 启动 Mieru (mita) 服务端 (守护进程模式: 先 run，再 apply config，再 start)
+    # 启动 Mieru (mita) 服务端 (优先走官方 systemd 服务，确保 mita.sock 权限与端口监听完全正常)
     local mieru_ok=0
     local mieru_status="未安装"
-    if [ -x /opt/suoha_quick/mita ]; then
+    if [ -n "$mita_bin" ] && [ -x "$mita_bin" ]; then
         cat > /opt/suoha_quick/mieru.json <<EOF
 {
   "portBindings": [
@@ -878,18 +904,35 @@ EOF
   "mtu": 1400
 }
 EOF
-        nohup /opt/suoha_quick/mita run >/opt/suoha_quick/mita.log 2>&1 &
-        local mita_pid=$!
-        echo $mita_pid > /opt/suoha_quick/mita.pid
-        sleep 1
-        if kill -0 "$mita_pid" 2>/dev/null; then
-            /opt/suoha_quick/mita apply config /opt/suoha_quick/mieru.json >/opt/suoha_quick/mita_apply.log 2>&1
-            /opt/suoha_quick/mita start >/opt/suoha_quick/mita_start.log 2>&1
-            sleep 0.5
-            mieru_ok=1
-            mieru_status="运行正常 (PID:${mita_pid} | 端口:${port_mieru})"
+        if [ $mita_systemd -eq 1 ]; then
+            systemctl daemon-reload >/dev/null 2>&1 || true
+            systemctl enable --now mita >/dev/null 2>&1 || systemctl restart mita >/dev/null 2>&1 || true
         else
-            mieru_status="启动失败: $(cat /opt/suoha_quick/mita.log 2>/dev/null | tr '\n' ' ')"
+            mkdir -p /var/run/mita /etc/mita /var/cache/mita
+            nohup "$mita_bin" run >/opt/suoha_quick/mita.log 2>&1 &
+            echo $! > /opt/suoha_quick/mita.pid
+        fi
+
+        # 轮询等待 mita.sock 就绪 (最多 5 秒)
+        local m_wait=0
+        while [ ! -S /var/run/mita/mita.sock ] && [ $m_wait -lt 10 ]; do
+            sleep 0.5
+            m_wait=$((m_wait+1))
+        done
+
+        if [ -S /var/run/mita/mita.sock ]; then
+            "$mita_bin" stop >/dev/null 2>&1 || true
+            "$mita_bin" replace config /opt/suoha_quick/mieru.json >/opt/suoha_quick/mita_apply.log 2>&1 || "$mita_bin" apply config /opt/suoha_quick/mieru.json >/opt/suoha_quick/mita_apply.log 2>&1
+            "$mita_bin" start >/opt/suoha_quick/mita_start.log 2>&1
+            sleep 0.8
+            if ss -tlpn 2>/dev/null | grep -q ":${port_mieru}"; then
+                mieru_ok=1
+                mieru_status="运行正常 (端口:${port_mieru} | 协议:TCP)"
+            else
+                mieru_status="端口未监听: $(cat /opt/suoha_quick/mita_start.log /opt/suoha_quick/mita_apply.log 2>/dev/null | tr '\n' ' ')"
+            fi
+        else
+            mieru_status="守护进程未就绪: $(cat /opt/suoha_quick/mita.log 2>/dev/null | tr '\n' ' ')"
         fi
     fi
 
@@ -1185,7 +1228,7 @@ EOF
             extra_nodes_display+="[Brook]      ${uri_brook}\n"
         fi
 
-        # (L) Mieru 直连节点 (同步写入 Clash/Mihomo YAML，开启 HANDSHAKE_NO_WAIT 0-RTT)
+        # (L) Mieru 直连节点 (同步写入 Clash/Mihomo YAML，使用最稳的 HANDSHAKE_STANDARD 模式)
         if [ $mieru_ok -eq 1 ]; then
             local pname_mieru="${node_tag}-Mieru"
             proxy_names+=("$pname_mieru")
@@ -1198,9 +1241,9 @@ EOF
     username: "${mieru_user}"
     password: "${password_all}"
     multiplexing: MULTIPLEXING_LOW
-    handshake-mode: HANDSHAKE_NO_WAIT
+    handshake-mode: HANDSHAKE_STANDARD
 EOF
-            extra_nodes_display+="[Mieru]      server=${direct_yaml_host} | port=${port_mieru} | user=${mieru_user} | pass=${password_all} | transport=TCP | 0-RTT=HANDSHAKE_NO_WAIT\n"
+            extra_nodes_display+="[Mieru]      server=${direct_yaml_host} | port=${port_mieru} | user=${mieru_user} | pass=${password_all} | transport=TCP\n"
         fi
 
         # (M) Sudoku 直连节点 (同步写入 Clash/Mihomo YAML 原生支持)
@@ -1360,7 +1403,7 @@ $(echo -e "${extra_nodes_display:-未检测到可用公网 IP，跳过直连协�
 [Snell 双栈专属配置 (Surge / Clash Verge / Mihomo)]
 $(echo -e "${snell_display_lines:-未检测到可用公网 IP，跳过 Snell 生成}")
 ======================== 端口与证书说明 ========================
-- 全链路 0-RTT 已启用: WS EarlyData=2048 / TUIC 0-RTT Handshake / Mieru HANDSHAKE_NO_WAIT / TCP Fast Open (TFO)
+- 全链路 0-RTT 已启用: WS EarlyData=2048 / TUIC 0-RTT Handshake / TCP Fast Open (TFO)
 - Argo 节点 443 端口可按需替换为 CF 其它 TLS 端口: 2053, 2083, 2087, 2096, 8443
 - AnyTLS / Hysteria2 / TUIC / Naive / Juicity 均已自动签发 www.bing.com 证书 (客户端需开启跳过证书验证)
 - VLESS Reality 共用参数 -> 伪装域名: www.bing.com | PublicKey: ${reality_pub} | ShortID: ${reality_sid}
