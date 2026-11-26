@@ -1,5 +1,5 @@
 #!/bin/bash
-# onekey suoha - Full Protocol Edition (全链路0-RTT + 1080P/4K内核优化 + 官方Sing-box主力 + 单Argo双路径 + Reality[Vision/gRPC] + AnyTLS + HY2 + TUIC + Snell双栈 + SS-IPv6)
+# onekey suoha - Full Protocol Edition (全链路0-RTT + 1080P/4K内核优化 + 官方Sing-box主力 + 单Argo双路径 + Reality[Vision/gRPC] + AnyTLS + HY2 + TUIC + Naive + Snell双栈 + SS-IPv6 + Juicity + Brook + Mieru + Sudoku)
 
 export PATH=$PATH:/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin
 
@@ -83,7 +83,7 @@ net.core.wmem_max = ${max_buf}
 net.ipv4.tcp_rmem = 4096 87380 ${max_buf}
 net.ipv4.tcp_wmem = 4096 65536 ${max_buf}
 
-# 4. UDP / QUIC (Hysteria2 / TUIC v5) 突发高码率队列防丢包
+# 4. UDP / QUIC (Hysteria2 / TUIC v5 / Juicity) 突发高码率队列防丢包
 net.ipv4.udp_rmem_min = 16384
 net.ipv4.udp_wmem_min = 16384
 net.core.netdev_max_backlog = 16384
@@ -236,12 +236,16 @@ function stop_all_services() {
     safe_kill_pidfile "/opt/suoha_quick/argo_router.pid"
     safe_kill_pidfile "/opt/suoha_quick/snell.pid"
     safe_kill_pidfile "/opt/suoha_quick/snell_v6.pid"
+    safe_kill_pidfile "/opt/suoha_quick/juicity.pid"
+    safe_kill_pidfile "/opt/suoha_quick/brook.pid"
+    safe_kill_pidfile "/opt/suoha_quick/mita.pid"
+    safe_kill_pidfile "/opt/suoha_quick/sudoku.pid"
     safe_kill_pidfile "/opt/suoha_quick/sub_http.pid"
 
     if command -v killall >/dev/null 2>&1; then
-        killall -9 sing-box cloudflared-linux snell-server snell-server-v6 >/dev/null 2>&1
+        killall -9 sing-box cloudflared-linux snell-server snell-server-v6 juicity-server brook mita sudoku >/dev/null 2>&1
     else
-        for bin_name in sing-box cloudflared-linux snell-server snell-server-v6; do
+        for bin_name in sing-box cloudflared-linux snell-server snell-server-v6 juicity-server brook mita sudoku; do
             for pid in $(pidof "$bin_name" 2>/dev/null); do
                 if [ "$pid" != "$$" ] && [ "$pid" != "$PPID" ]; then
                     kill -9 "$pid" >/dev/null 2>&1
@@ -279,7 +283,7 @@ fi
 function quicktunnel_all_in_one() {
     clear
     echo -e "${CYAN}==================================================================${NC}"
-    echo -e "${GREEN}   一键全协议梭哈部署启动中 (全链路0-RTT + 4K内核调优 + Sing-box + 单Argo + Snell + SS)${NC}"
+    echo -e "${GREEN}   一键全协议梭哈部署启动中 (14协议全栈 + 0-RTT + 4K内核调优)${NC}"
     echo -e "${CYAN}==================================================================${NC}\n"
 
     show_progress 1 "初始化运行环境并彻底清空旧进程与历史文件..."
@@ -295,27 +299,47 @@ function quicktunnel_all_in_one() {
     local arch_sb=""
     local arch_cf=""
     local arch_snell=""
+    local arch_juicity=""
+    local arch_brook=""
+    local arch_mita=""
+    local arch_sudoku=""
 
     case "$(uname -m)" in
         x86_64 | x64 | amd64 )
             arch_sb="linux-amd64"
             arch_cf="linux-amd64"
             arch_snell="linux-amd64"
+            arch_juicity="linux-x86_64"
+            arch_brook="linux_amd64"
+            arch_mita="amd64"
+            arch_sudoku="linux-amd64"
             ;;
         i386 | i686 )
             arch_sb="linux-386"
             arch_cf="linux-386"
             arch_snell="linux-i386"
+            arch_juicity="linux-x86_32"
+            arch_brook="linux_386"
+            arch_mita="386"
+            arch_sudoku="linux-386"
             ;;
         armv8 | arm64 | aarch64 )
             arch_sb="linux-arm64"
             arch_cf="linux-arm64"
             arch_snell="linux-aarch64"
+            arch_juicity="linux-arm64"
+            arch_brook="linux_arm64"
+            arch_mita="arm64"
+            arch_sudoku="linux-arm64"
             ;;
         armv7l )
             arch_sb="linux-armv7"
             arch_cf="linux-arm"
             arch_snell="linux-armv7l"
+            arch_juicity="linux-armv7"
+            arch_brook="linux_arm7"
+            arch_mita="arm"
+            arch_sudoku="linux-armv7"
             ;;
         * )
             echo -e "\n${RED}当前架构 $(uname -m) 暂不支持！${NC}"
@@ -323,31 +347,97 @@ function quicktunnel_all_in_one() {
             ;;
     esac
 
-    show_progress 15 "正在获取官方 Sing-box 稳定版核心..."
+    show_progress 14 "正在获取官方 Sing-box 稳定版核心..."
     local sb_version
     sb_version=$(curl -s https://api.github.com/repos/SagerNet/sing-box/releases/latest | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
     if [ -z "$sb_version" ]; then
         sb_version="1.12.12"
     fi
 
-    show_progress 22 "正在下载官方 Sing-box v${sb_version} 主力核心..."
+    show_progress 18 "正在下载官方 Sing-box v${sb_version} 主力核心 (含 Naive)..."
     curl -sL "https://github.com/SagerNet/sing-box/releases/download/v${sb_version}/sing-box-${sb_version}-${arch_sb}.tar.gz" -o sb.tar.gz
     tar -xzf sb.tar.gz >/dev/null 2>&1
     mv "sing-box-${sb_version}-${arch_sb}/sing-box" /opt/suoha_quick/sing-box 2>/dev/null
     rm -rf "sing-box-${sb_version}-${arch_sb}" sb.tar.gz
 
-    show_progress 34 "正在下载 Cloudflare Argo 隧道组件..."
+    show_progress 24 "正在下载 Cloudflare Argo 隧道组件..."
     curl -sL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-${arch_cf}" -o /opt/suoha_quick/cloudflared-linux
 
-    show_progress 44 "正在下载官方 Snell v4.1.1 双栈服务端..."
+    show_progress 30 "正在下载官方 Snell v4.1.1 双栈服务端..."
     curl -sL "https://dl.nssurge.com/snell/snell-server-v4.1.1-${arch_snell}.zip" -o snell.zip
     if [ -s snell.zip ] && unzip -t snell.zip >/dev/null 2>&1; then
         unzip -oq snell.zip -d /opt/suoha_quick/ >/dev/null 2>&1
     fi
     rm -f snell.zip
 
+    show_progress 35 "正在下载 Juicity 服务端..."
+    curl -sL "https://github.com/juicity/juicity/releases/latest/download/juicity-${arch_juicity}.zip" -o juicity.zip
+    if [ -s juicity.zip ] && unzip -t juicity.zip >/dev/null 2>&1; then
+        mkdir -p /opt/suoha_quick/tmp_juicity
+        unzip -oq juicity.zip -d /opt/suoha_quick/tmp_juicity >/dev/null 2>&1
+        local jbin
+        jbin=$(find /opt/suoha_quick/tmp_juicity -type f -name "juicity-server" | head -n 1)
+        [ -n "$jbin" ] && mv "$jbin" /opt/suoha_quick/juicity-server
+        rm -rf /opt/suoha_quick/tmp_juicity
+    fi
+    rm -f juicity.zip
+
+    show_progress 40 "正在下载 Brook 服务端..."
+    curl -sL "https://github.com/txthinking/brook/releases/latest/download/brook_${arch_brook}" -o /opt/suoha_quick/brook
+
+    show_progress 44 "正在下载 Mieru (mita) 服务端..."
+    local mita_url
+    mita_url=$(curl -s "https://api.github.com/repos/enfein/mieru/releases/latest" | grep -oE "https://github\.com/enfein/mieru/releases/download/[^\"]*mita[^\"]*${arch_mita}\.tar\.gz" | head -n 1)
+    if [ -n "$mita_url" ]; then
+        curl -sL "$mita_url" -o mita.tar.gz
+        if [ -s mita.tar.gz ] && tar -tzf mita.tar.gz >/dev/null 2>&1; then
+            mkdir -p /opt/suoha_quick/tmp_mita
+            tar -xzf mita.tar.gz -C /opt/suoha_quick/tmp_mita >/dev/null 2>&1
+            local mbin
+            mbin=$(find /opt/suoha_quick/tmp_mita -type f -name "mita" | head -n 1)
+            [ -n "$mbin" ] && mv "$mbin" /opt/suoha_quick/mita
+            rm -rf /opt/suoha_quick/tmp_mita
+        fi
+        rm -f mita.tar.gz
+    fi
+
+    show_progress 47 "正在下载 Sudoku 服务端..."
+    local sudoku_url
+    sudoku_url=$(curl -s "https://api.github.com/repos/SUDOKU-ASCII/sudoku/releases/latest" | grep -oE "https://github\.com/SUDOKU-ASCII/sudoku/releases/download/[^\"]*${arch_sudoku}[^\"]*" | head -n 1)
+    if [ -n "$sudoku_url" ]; then
+        if [[ "$sudoku_url" == *.tar.gz ]]; then
+            curl -sL "$sudoku_url" -o sudoku.tar.gz
+            if [ -s sudoku.tar.gz ] && tar -tzf sudoku.tar.gz >/dev/null 2>&1; then
+                mkdir -p /opt/suoha_quick/tmp_sudoku
+                tar -xzf sudoku.tar.gz -C /opt/suoha_quick/tmp_sudoku >/dev/null 2>&1
+                local sbin
+                sbin=$(find /opt/suoha_quick/tmp_sudoku -type f -name "*sudoku*" | head -n 1)
+                [ -n "$sbin" ] && mv "$sbin" /opt/suoha_quick/sudoku
+                rm -rf /opt/suoha_quick/tmp_sudoku
+            fi
+            rm -f sudoku.tar.gz
+        elif [[ "$sudoku_url" == *.zip ]]; then
+            curl -sL "$sudoku_url" -o sudoku.zip
+            if [ -s sudoku.zip ] && unzip -t sudoku.zip >/dev/null 2>&1; then
+                mkdir -p /opt/suoha_quick/tmp_sudoku
+                unzip -oq sudoku.zip -d /opt/suoha_quick/tmp_sudoku >/dev/null 2>&1
+                local sbin
+                sbin=$(find /opt/suoha_quick/tmp_sudoku -type f -name "*sudoku*" | head -n 1)
+                [ -n "$sbin" ] && mv "$sbin" /opt/suoha_quick/sudoku
+                rm -rf /opt/suoha_quick/tmp_sudoku
+            fi
+            rm -f sudoku.zip
+        else
+            curl -sL "$sudoku_url" -o /opt/suoha_quick/sudoku
+        fi
+    fi
+
     chmod +x /opt/suoha_quick/sing-box /opt/suoha_quick/cloudflared-linux 2>/dev/null
     [ -f /opt/suoha_quick/snell-server ] && chmod +x /opt/suoha_quick/snell-server
+    [ -f /opt/suoha_quick/juicity-server ] && chmod +x /opt/suoha_quick/juicity-server
+    [ -f /opt/suoha_quick/brook ] && chmod +x /opt/suoha_quick/brook
+    [ -f /opt/suoha_quick/mita ] && chmod +x /opt/suoha_quick/mita
+    [ -f /opt/suoha_quick/sudoku ] && chmod +x /opt/suoha_quick/sudoku
 
     if [ ! -x /opt/suoha_quick/sing-box ] || [ ! -x /opt/suoha_quick/cloudflared-linux ]; then
         echo -e "\n${RED}核心文件下载失败，请检查服务器网络连接（GitHub 访问是否正常）！${NC}"
@@ -355,7 +445,7 @@ function quicktunnel_all_in_one() {
     fi
 
     # 2. 探测服务器公网 IPv4 与 IPv6
-    show_progress 48 "正在探测服务器双栈公网 IP..."
+    show_progress 49 "正在探测服务器双栈公网 IP..."
     local server_ip
     server_ip=$(get_server_ip)
     local server_ipv6
@@ -388,6 +478,8 @@ function quicktunnel_all_in_one() {
     local grpc_service="gr-${short_id}"
     local password_all
     password_all=$(openssl rand -hex 12)
+    local naive_user="user_${short_id}"
+    local mieru_user="mieru_${short_id}"
     local ss_method="aes-128-gcm"
     local ss_password
     ss_password=$(openssl rand -hex 12)
@@ -402,6 +494,11 @@ function quicktunnel_all_in_one() {
     local port_snell=$((port_reality+4))
     local port_ss_v6=$((port_reality+5))
     local port_rel_grpc=$((port_reality+6))
+    local port_naive=$((port_reality+7))
+    local port_juicity=$((port_reality+8))
+    local port_brook=$((port_reality+9))
+    local port_mieru=$((port_reality+10))
+    local port_sudoku=$((port_reality+11))
 
     open_firewall_port "$port_reality"
     open_firewall_port "$port_rel_grpc"
@@ -410,9 +507,14 @@ function quicktunnel_all_in_one() {
     open_firewall_port "$port_tuic"
     open_firewall_port "$port_snell"
     open_firewall_port "$port_ss_v6"
+    open_firewall_port "$port_naive"
+    open_firewall_port "$port_juicity"
+    open_firewall_port "$port_brook"
+    open_firewall_port "$port_mieru"
+    open_firewall_port "$port_sudoku"
 
-    # 5. 生成官方 Sing-box 主力全协议配置文件 (开启 WS 0-RTT EarlyData 与 TUIC 0-RTT Handshake)
-    show_progress 58 "正在写入官方 Sing-box 全协议配置 (已开启 0-RTT 支持)..."
+    # 5. 生成官方 Sing-box 主力全协议配置文件 (新增 naive 入站，开启 WS 0-RTT & TUIC 0-RTT & TFO)
+    show_progress 58 "正在写入官方 Sing-box 全协议配置 (含 Naive 与全链路 0-RTT)..."
     cat > /opt/suoha_quick/singbox.json <<EOF
 {
   "log": {
@@ -543,6 +645,25 @@ function quicktunnel_all_in_one() {
       }
     },
     {
+      "type": "naive",
+      "tag": "naive-in",
+      "listen": "::",
+      "listen_port": ${port_naive},
+      "tcp_fast_open": true,
+      "users": [
+        {
+          "username": "${naive_user}",
+          "password": "${password_all}"
+        }
+      ],
+      "tls": {
+        "enabled": true,
+        "server_name": "www.bing.com",
+        "certificate_path": "/opt/suoha_quick/cert/bing.crt",
+        "key_path": "/opt/suoha_quick/cert/bing.key"
+      }
+    },
+    {
       "type": "hysteria2",
       "tag": "hy2-in",
       "listen": "::",
@@ -602,7 +723,7 @@ function quicktunnel_all_in_one() {
 }
 EOF
 
-    show_progress 66 "正在启动官方 Sing-box 主力、本地分流器与 Snell 双栈守护进程..."
+    show_progress 64 "正在启动 Sing-box、Snell、Juicity、Brook、Mieru、Sudoku 守护进程..."
     nohup /opt/suoha_quick/sing-box run -c /opt/suoha_quick/singbox.json >/opt/suoha_quick/singbox.log 2>&1 &
     local sb_pid=$!
     echo $sb_pid > /opt/suoha_quick/singbox.pid
@@ -675,19 +796,123 @@ EOF
         nohup /opt/suoha_quick/snell-server -c /opt/suoha_quick/snell.conf >/opt/suoha_quick/snell.log 2>&1 &
         local snell_pid=$!
         echo $snell_pid > /opt/suoha_quick/snell.pid
-        sleep 0.5
+        sleep 0.4
         if ! kill -0 "$snell_pid" 2>/dev/null; then
             sed -i "s|::0|0.0.0.0|g" /opt/suoha_quick/snell.conf
             nohup /opt/suoha_quick/snell-server -c /opt/suoha_quick/snell.conf >/opt/suoha_quick/snell.log 2>&1 &
             snell_pid=$!
             echo $snell_pid > /opt/suoha_quick/snell.pid
-            sleep 0.5
+            sleep 0.4
         fi
         if kill -0 "$snell_pid" 2>/dev/null; then
             snell_installed=1
             local listen_info
             listen_info=$(ss -tlpn 2>/dev/null | grep "pid=${snell_pid}" | awk '{print $4}' | tr '\n' ' ')
             snell_status="运行正常 (PID:${snell_pid} | 监听:${listen_info:-::0:${port_snell}})"
+        fi
+    fi
+
+    # 启动 Juicity 服务端
+    local juicity_ok=0
+    local juicity_status="未安装"
+    if [ -x /opt/suoha_quick/juicity-server ]; then
+        cat > /opt/suoha_quick/juicity.json <<EOF
+{
+  "listen": ":${port_juicity}",
+  "users": {
+    "${uuid}": "${password_all}"
+  },
+  "certificate": "/opt/suoha_quick/cert/bing.crt",
+  "private_key": "/opt/suoha_quick/cert/bing.key",
+  "congestion_control": "bbr",
+  "log_level": "error"
+}
+EOF
+        nohup /opt/suoha_quick/juicity-server run -c /opt/suoha_quick/juicity.json >/opt/suoha_quick/juicity.log 2>&1 &
+        local juicity_pid=$!
+        echo $juicity_pid > /opt/suoha_quick/juicity.pid
+        sleep 0.4
+        if kill -0 "$juicity_pid" 2>/dev/null; then
+            juicity_ok=1
+            juicity_status="运行正常 (PID:${juicity_pid} | 端口:${port_juicity})"
+        else
+            juicity_status="启动失败: $(cat /opt/suoha_quick/juicity.log 2>/dev/null | tr '\n' ' ')"
+        fi
+    fi
+
+    # 启动 Brook 服务端
+    local brook_ok=0
+    local brook_status="未安装"
+    if [ -x /opt/suoha_quick/brook ]; then
+        nohup /opt/suoha_quick/brook server -l ":${port_brook}" -p "${password_all}" >/opt/suoha_quick/brook.log 2>&1 &
+        local brook_pid=$!
+        echo $brook_pid > /opt/suoha_quick/brook.pid
+        sleep 0.4
+        if kill -0 "$brook_pid" 2>/dev/null; then
+            brook_ok=1
+            brook_status="运行正常 (PID:${brook_pid} | 端口:${port_brook})"
+        else
+            brook_status="启动失败: $(cat /opt/suoha_quick/brook.log 2>/dev/null | tr '\n' ' ')"
+        fi
+    fi
+
+    # 启动 Mieru (mita) 服务端
+    local mieru_ok=0
+    local mieru_status="未安装"
+    if [ -x /opt/suoha_quick/mita ]; then
+        cat > /opt/suoha_quick/mieru.json <<EOF
+{
+  "portBindings": [
+    {
+      "port": ${port_mieru},
+      "protocol": "TCP"
+    }
+  ],
+  "users": [
+    {
+      "name": "${mieru_user}",
+      "password": "${password_all}"
+    }
+  ],
+  "loggingLevel": "ERROR",
+  "mtu": 1400
+}
+EOF
+        nohup /opt/suoha_quick/mita run -c /opt/suoha_quick/mieru.json >/opt/suoha_quick/mita.log 2>&1 &
+        local mita_pid=$!
+        echo $mita_pid > /opt/suoha_quick/mita.pid
+        sleep 0.4
+        if kill -0 "$mita_pid" 2>/dev/null; then
+            mieru_ok=1
+            mieru_status="运行正常 (PID:${mita_pid} | 端口:${port_mieru})"
+        else
+            mieru_status="启动失败: $(cat /opt/suoha_quick/mita.log 2>/dev/null | tr '\n' ' ')"
+        fi
+    fi
+
+    # 启动 Sudoku 服务端
+    local sudoku_ok=0
+    local sudoku_status="未安装"
+    if [ -x /opt/suoha_quick/sudoku ]; then
+        cat > /opt/suoha_quick/sudoku.json <<EOF
+{
+  "mode": "server",
+  "local_port": ${port_sudoku},
+  "key": "${password_all}",
+  "aead": "aes-128-gcm",
+  "padding_min": 10,
+  "padding_max": 30
+}
+EOF
+        nohup /opt/suoha_quick/sudoku -c /opt/suoha_quick/sudoku.json >/opt/suoha_quick/sudoku.log 2>&1 &
+        local sudoku_pid=$!
+        echo $sudoku_pid > /opt/suoha_quick/sudoku.pid
+        sleep 0.4
+        if kill -0 "$sudoku_pid" 2>/dev/null; then
+            sudoku_ok=1
+            sudoku_status="运行正常 (PID:${sudoku_pid} | 端口:${port_sudoku})"
+        else
+            sudoku_status="启动失败: $(cat /opt/suoha_quick/sudoku.log 2>/dev/null | tr '\n' ' ')"
         fi
     fi
 
@@ -746,8 +971,8 @@ EOF
         fi
     done
 
-    # 7. 生成全协议节点链接与 Clash / Mihomo 配置文件 (全面启用 0-RTT: ?ed=2048 / max-early-data / reduce-rtt / tfo)
-    show_progress 95 "正在生成全链路 0-RTT URI 链接与 Clash/Mihomo 聚合配置..."
+    # 7. 生成全协议节点链接与 Clash / Mihomo 配置文件
+    show_progress 95 "正在生成全协议 0-RTT URI 链接与 Clash/Mihomo 聚合配置..."
     > /opt/suoha_quick/nodes.txt
     > /opt/suoha_quick/surge.conf
 
@@ -768,7 +993,7 @@ EOF
     local argo_domains=("$argo_domain" "${opt_domains[@]}")
     local argo_labels=("默认Argo" "${opt_labels[@]}")
 
-    # (A) VLESS Argo 节点组 (通用链接 path 携带 %3Fed%3D2048，Clash 开启 max-early-data: 2048 0-RTT)
+    # (A) VLESS Argo 节点组
     for idx in "${!argo_domains[@]}"; do
         local d="${argo_domains[$idx]}"
         local l="${argo_labels[$idx]}"
@@ -796,7 +1021,7 @@ EOF
 EOF
     done
 
-    # (B) Trojan Argo 节点组 (通用链接 path 携带 %3Fed%3D2048，Clash 开启 max-early-data: 2048 0-RTT)
+    # (B) Trojan Argo 节点组
     for idx in "${!argo_domains[@]}"; do
         local d="${argo_domains[$idx]}"
         local l="${argo_labels[$idx]}"
@@ -833,8 +1058,10 @@ EOF
         direct_yaml_host="$server_ipv6"
     fi
 
+    local extra_nodes_display=""
+
     if [ -n "$direct_host" ]; then
-        # (C1) VLESS Reality Vision 直连节点 (开启 tfo: true 0-RTT)
+        # (C1) VLESS Reality Vision 直连节点
         local pname_rel="${node_tag}-VLESS-Reality-Vision"
         echo "vless://${uuid}@${direct_host}:${port_reality}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.bing.com&fp=chrome&pbk=${reality_pub}&sid=${reality_sid}&type=tcp&headerType=none&tfo=1#${pname_rel}" >> /opt/suoha_quick/nodes.txt
         proxy_names+=("$pname_rel")
@@ -856,7 +1083,7 @@ EOF
     client-fingerprint: chrome
 EOF
 
-        # (C2) VLESS Reality gRPC 直连节点 (开启 tfo: true 0-RTT)
+        # (C2) VLESS Reality gRPC 直连节点
         local pname_rel_grpc="${node_tag}-VLESS-Reality-gRPC"
         echo "vless://${uuid}@${direct_host}:${port_rel_grpc}?encryption=none&security=reality&sni=www.bing.com&fp=chrome&pbk=${reality_pub}&sid=${reality_sid}&type=grpc&serviceName=${grpc_service}&mode=gun&tfo=1#${pname_rel_grpc}" >> /opt/suoha_quick/nodes.txt
         proxy_names+=("$pname_rel_grpc")
@@ -879,7 +1106,7 @@ EOF
     client-fingerprint: chrome
 EOF
 
-        # (D) AnyTLS 直连节点 (自签 www.bing.com + tfo: true)
+        # (D) AnyTLS 直连节点
         local pname_any="${node_tag}-AnyTLS-Bing"
         echo "anytls://${password_all}@${direct_host}:${port_anytls}?sni=www.bing.com&insecure=1&tfo=1#${pname_any}" >> /opt/suoha_quick/nodes.txt
         proxy_names+=("$pname_any")
@@ -896,7 +1123,7 @@ EOF
     skip-cert-verify: true
 EOF
 
-        # (E) Hysteria2 直连节点 (自签 www.bing.com)
+        # (E) Hysteria2 直连节点
         local pname_hy2="${node_tag}-Hysteria2-Bing"
         echo "hysteria2://${password_all}@${direct_host}:${port_hy2}?sni=www.bing.com&insecure=1#${pname_hy2}" >> /opt/suoha_quick/nodes.txt
         proxy_names+=("$pname_hy2")
@@ -912,7 +1139,7 @@ EOF
       - h3
 EOF
 
-        # (F) TUIC v5 直连节点 (服务端 zero_rtt_handshake: true + 客户端 reduce_rtt=1 / reduce-rtt: true 0-RTT)
+        # (F) TUIC v5 直连节点
         local pname_tuic="${node_tag}-TUICv5-Bing"
         echo "tuic://${uuid}:${password_all}@${direct_host}:${port_tuic}?congestion_control=bbr&alpn=h3&sni=www.bing.com&udp_relay_mode=native&reduce_rtt=1&allow_insecure=1#${pname_tuic}" >> /opt/suoha_quick/nodes.txt
         proxy_names+=("$pname_tuic")
@@ -932,9 +1159,66 @@ EOF
     sni: www.bing.com
     skip-cert-verify: true
 EOF
+
+        # (I) NaiveProxy 直连节点 (由 Sing-box 原生提供)
+        local pname_naive="${node_tag}-Naive-Bing"
+        local uri_naive="naive+https://${naive_user}:${password_all}@${direct_host}:${port_naive}?padding=1&sni=www.bing.com&insecure=1#${pname_naive}"
+        echo "$uri_naive" >> /opt/suoha_quick/nodes.txt
+        extra_nodes_display+="[NaiveProxy] ${uri_naive}\n"
+
+        # (J) Juicity 直连节点
+        if [ $juicity_ok -eq 1 ]; then
+            local pname_juicity="${node_tag}-Juicity-Bing"
+            local uri_juicity="juicity://${uuid}:${password_all}@${direct_host}:${port_juicity}?congestion_control=bbr&sni=www.bing.com&allow_insecure=1#${pname_juicity}"
+            echo "$uri_juicity" >> /opt/suoha_quick/nodes.txt
+            extra_nodes_display+="[Juicity]    ${uri_juicity}\n"
+        fi
+
+        # (K) Brook 直连节点
+        if [ $brook_ok -eq 1 ]; then
+            local pname_brook="${node_tag}-Brook"
+            local uri_brook="brook://server?server=${direct_host}:${port_brook}&password=${password_all}&name=${pname_brook}"
+            echo "$uri_brook" >> /opt/suoha_quick/nodes.txt
+            extra_nodes_display+="[Brook]      ${uri_brook}\n"
+        fi
+
+        # (L) Mieru 直连节点 (同步写入 Clash/Mihomo YAML，开启 HANDSHAKE_NO_WAIT 0-RTT)
+        if [ $mieru_ok -eq 1 ]; then
+            local pname_mieru="${node_tag}-Mieru"
+            proxy_names+=("$pname_mieru")
+            cat >> /opt/suoha_quick/clash.yaml <<EOF
+  - name: "${pname_mieru}"
+    type: mieru
+    server: ${direct_yaml_host}
+    port: ${port_mieru}
+    transport: TCP
+    username: "${mieru_user}"
+    password: "${password_all}"
+    multiplexing: MULTIPLEXING_LOW
+    handshake-mode: HANDSHAKE_NO_WAIT
+EOF
+            extra_nodes_display+="[Mieru]      server=${direct_yaml_host} | port=${port_mieru} | user=${mieru_user} | pass=${password_all} | transport=TCP | 0-RTT=HANDSHAKE_NO_WAIT\n"
+        fi
+
+        # (M) Sudoku 直连节点 (同步写入 Clash/Mihomo YAML 原生支持)
+        if [ $sudoku_ok -eq 1 ]; then
+            local pname_sudoku="${node_tag}-Sudoku"
+            proxy_names+=("$pname_sudoku")
+            cat >> /opt/suoha_quick/clash.yaml <<EOF
+  - name: "${pname_sudoku}"
+    type: sudoku
+    server: ${direct_yaml_host}
+    port: ${port_sudoku}
+    key: "${password_all}"
+    aead-method: aes-128-gcm
+    padding-min: 10
+    padding-max: 30
+EOF
+            extra_nodes_display+="[Sudoku]     server=${direct_yaml_host} | port=${port_sudoku} | key=${password_all} | aead=aes-128-gcm\n"
+        fi
     fi
 
-    # (G) 原生 Shadowsocks IPv6 直连节点 (ss-ipv6 + tfo: true)
+    # (G) 原生 Shadowsocks IPv6 直连节点
     local ss_v6_uri=""
     if [ -n "$server_ipv6" ]; then
         local ss_user_info="${ss_method}:${ss_password}"
@@ -960,7 +1244,7 @@ EOF
 EOF
     fi
 
-    # (H) Snell 双栈节点 (tfo: true / tfo=true)
+    # (H) Snell 双栈节点
     local snell_display_lines=""
     if [ $snell_installed -eq 1 ]; then
         if [ -n "$server_ip" ]; then
@@ -1054,26 +1338,31 @@ EOF
 ======================== 一键全协议梭哈节点列表 ========================
 [核心运行状态]:
   ├─ 1080P/4K 内核网络调优 : 拥塞控制=${cc_active} | 队列=${qdisc_active} | 缓冲上限=${rmem_mb}MB | TFO=${tfo_active}
-  ├─ 官方 Sing-box 主力进程 : ${sb_status} (已启用 WS EarlyData 2048 & TUIC 0-RTT)
-  └─ Snell 双栈守护进程    : ${snell_status}
+  ├─ 官方 Sing-box 主力进程 : ${sb_status} (含 Naive / WS EarlyData 2048 / TUIC 0-RTT)
+  ├─ Snell 双栈守护进程    : ${snell_status}
+  ├─ Juicity 守护进程      : ${juicity_status}
+  ├─ Brook 守护进程        : ${brook_status}
+  ├─ Mieru (mita) 守护进程 : ${mieru_status}
+  └─ Sudoku 守护进程       : ${sudoku_status}
 
 [单 Argo 共用域名]: ${argo_domain}
   ├─ VLESS  WebSocket 路径: /${urlpath_vless}?ed=2048 (0-RTT)
   └─ Trojan WebSocket 路径: /${urlpath_trojan}?ed=2048 (0-RTT)
 
-[URI 通用节点链接 (Argo / Reality[Vision/gRPC] / AnyTLS / HY2 / TUIC / SS-IPv6)]
+[URI 通用节点链接 (Argo / Reality / AnyTLS / HY2 / TUIC / Naive / Juicity / Brook / SS-IPv6)]
 $(cat /opt/suoha_quick/nodes.txt)
 
+[新增协议参数明细 (Naive / Juicity / Brook / Mieru / Sudoku)]
+$(echo -e "${extra_nodes_display:-未检测到可用公网 IP，跳过直连协议生成}")
 [Snell 双栈专属配置 (Surge / Clash Verge / Mihomo)]
 $(echo -e "${snell_display_lines:-未检测到可用公网 IP，跳过 Snell 生成}")
 ======================== 端口与证书说明 ========================
-- 全链路 0-RTT 已启用: WS EarlyData=2048 / TUIC 0-RTT Handshake / TCP Fast Open (TFO)
+- 全链路 0-RTT 已启用: WS EarlyData=2048 / TUIC 0-RTT Handshake / Mieru HANDSHAKE_NO_WAIT / TCP Fast Open (TFO)
 - Argo 节点 443 端口可按需替换为 CF 其它 TLS 端口: 2053, 2083, 2087, 2096, 8443
-- AnyTLS / Hysteria2 / TUIC 均已自动签发 www.bing.com 证书 (客户端需开启跳过证书验证)
+- AnyTLS / Hysteria2 / TUIC / Naive / Juicity 均已自动签发 www.bing.com 证书 (客户端需开启跳过证书验证)
 - VLESS Reality 共用参数 -> 伪装域名: www.bing.com | PublicKey: ${reality_pub} | ShortID: ${reality_sid}
   ├─ Reality Vision 端口: ${port_reality}
   └─ Reality gRPC   端口: ${port_rel_grpc} (ServiceName: ${grpc_service})
-- (注: XHTTP 节点已暂时屏蔽，等待官方内核原生支持)
 
 ======================== 客户端订阅及导入链接 ========================
 本机固定订阅服务端口: ${sub_port} (已永久保存，重新梭哈无需重新导入客户端)
