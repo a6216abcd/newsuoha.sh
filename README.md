@@ -1,6 +1,6 @@
-# New-Suoha: 全协议一键梭哈部署脚本 (全链路0-RTT + 4K内核调优 + Sing-box主力 + 单Argo双路径 + Snell双栈 + SS-IPv6)
+# New-Suoha: 全协议一键梭哈部署脚本 (14协议全栈 + 全链路0-RTT + 4K内核调优 + Sing-box主力 + 单Argo双路径 + Snell双栈 + SS-IPv6)
 
-轻量、极速、全自动零交互、开箱即用的全协议代理一键部署脚本。每次运行前自动彻底清理旧进程与历史残留，前置应用 **1080P / 4K 高码率视频流媒体 TCP & UDP 与全链路 0-RTT 内核级网络调优**，基于 **官方原版 Sing-box 核心** 与 **Cloudflare Argo 临时隧道**，结合轻量级异步路径分发器与 **Snell v4** 官方双栈服务端，一条命令即可在主流 Linux VPS 上全自动部署 **9 种主流直连与 CDN 隧道协议**。内置**永久固定订阅端口**托管服务，重新梭哈后客户端无需重新导入，直接刷新订阅即可无缝切换。
+轻量、极速、全自动零交互、开箱即用的全协议代理一键部署脚本。每次运行前自动彻底清理旧进程与历史残留，前置应用 **1080P / 4K 高码率视频流媒体 TCP & UDP 与全链路 0-RTT 内核级网络调优**，基于 **官方原版 Sing-box 核心** 与 **Cloudflare Argo 临时隧道**，结合轻量级异步路径分发器、**Snell v4** 官方双栈服务端及 **Juicity / Brook / Mieru / Sudoku** 独立守护引擎，一条命令即可在主流 Linux VPS 上全自动部署 **14 种主流直连与 CDN 隧道协议**。内置**永久固定订阅端口**托管服务，重新梭哈后客户端无需重新导入，直接刷新订阅即可无缝切换。
 
 ---
 
@@ -9,10 +9,8 @@
 本项目基于开源社区优秀成果深度重构与升级，在此特别鸣谢：
 
 - **原版梭哈脚本**：感谢 [jwfst5088/suoha.sh](https://github.com/jwfst5088/suoha.sh) 开拓性的灵感启发与基础实现，经典梭哈模式为轻量化 Argo 部署奠定了极简实用的体验基础。
-
 - **Cloudflare 优选节点提供方**：感谢社区与站长们无私维护并分享的高质量 Cloudflare 优选 CDN 域名（如 `cf.090227.xyz`、`cloudflare.182682.xyz` 等），极大改善了国内到 Cloudflare 边缘网络的延迟与连接质量。
-
-- **SagerNet、Cloudflare 与 Surge**：感谢 [SagerNet/sing-box](https://github.com/SagerNet/sing-box)、[cloudflare/cloudflared](https://github.com/cloudflare/cloudflared) 与 [Surge Snell](https://kb.nssurge.com/surge-knowledge-base/release-notes/snell) 提供的底层核心技术支持。
+- **底层核心与协议项目**：感谢 [SagerNet/sing-box](https://github.com/SagerNet/sing-box)、[cloudflare/cloudflared](https://github.com/cloudflare/cloudflared)、[Surge Snell](https://kb.nssurge.com/surge-knowledge-base/release-notes/snell)、[juicity/juicity](https://github.com/juicity/juicity)、[txthinking/brook](https://github.com/txthinking/brook)、[enfein/mieru](https://github.com/enfein/mieru) 与 [SUDOKU-ASCII/sudoku](https://github.com/SUDOKU-ASCII/sudoku) 提供的底层核心技术支持。
 
 ---
 
@@ -27,7 +25,7 @@
   - 部署前自动写入 `/etc/sysctl.d/99-suoha-4k.conf` 并即时生效（卸载时自动清理）；
   - 强制开启 **BBR 拥塞控制 + FQ 公平队列调度**，显著提升跨洋高延迟链路的大码率吞吐与抗丢包能力；
   - **内存自适应读写缓冲窗口**：自动识别 VPS 物理内存（小于 `512MB` 机型启用 `8MB` 安全缓冲防 OOM，大于等于 `512MB` 机型启用 `32MB` 大窗口缓冲），充分喂饱 4K 60fps 视频流的高 BDP 窗口；
-  - 针对 **UDP / QUIC**（Hysteria2 / TUIC v5）增大收发队列与 `netdev_max_backlog` 防止突发丢包，关闭 `tcp_slow_start_after_idle` 避免视频暂停恢复播放时降速。
+  - 针对 **UDP / QUIC**（Hysteria2 / TUIC v5 / Juicity）增大收发队列与 `netdev_max_backlog` 防止突发丢包，关闭 `tcp_slow_start_after_idle` 避免视频暂停恢复播放时降速。
 
 - **多架构与多系统适配**：原生支持 `x86_64`、`arm64`、`armv7l`、`i386` 架构；全面适配 Debian、Ubuntu、CentOS、Fedora 及 Alpine Linux。
 
@@ -35,20 +33,24 @@
 
 - **单 Argo 隧道双路径复用**：通过内置的轻量级 Python `asyncio` 本地分流守护进程，仅申请一条 `*.trycloudflare.com` 临时隧道即可按路径同时分发 **VLESS-WS** (`/vl-xxx?ed=2048`) 与 **Trojan-WS** (`/tr-xxx?ed=2048`) 双协议；内置 HTTP/2 与 QUIC 超时自动切换重连机制，并矩阵式生成 **3 组优选域名**（`默认 Argo 域名`、`cf.090227.xyz`、`cloudflare.182682.xyz`）的 443 TLS 节点。
 
-- **全主流直连协议矩阵并发**：在单一官方 Sing-box 进程内原生并发监听以下直连抗封锁与高速协议，同时拉起原生 Snell v4 双栈守护进程：
+- **14 协议全栈直连矩阵并发**：在单一官方 Sing-box 进程内原生并发监听主力抗封锁协议，并同步拉起 Snell v4、Juicity、Brook、Mieru、Sudoku 独立服务端：
   - **VLESS-Reality-Vision** (`xtls-rprx-vision` + `www.bing.com` 伪装 + `TFO`，主力首选)
   - **VLESS-Reality-gRPC** (`gun` 多路复用 + `www.bing.com` 伪装 + `TFO`)
   - **AnyTLS** (动态 Padding 策略 + 自签 `www.bing.com` + `TFO`)
+  - **NaiveProxy** (Sing-box 原生入站 + 自签 `www.bing.com` + `TFO`，输出 `naive+https://` 通用链接)
   - **Hysteria2** (QUIC + `h3` ALPN + 自签 `www.bing.com`)
   - **TUIC v5** (QUIC + BBR + `0-RTT Handshake` + Native UDP Relay)
   - **Snell v4 双栈** (原生 `::0` 双栈监听，独立输出 IPv4 与 IPv6 节点配置，含 `ip-version: ipv6` 与 `tfo: true`)
   - **Shadowsocks IPv6** (`aes-128-gcm` + `TFO`，自动探测 IPv6 输出原生直连节点)
+  - **Mieru (mita)** (Debian/Ubuntu 自动安装官方 `.deb` 与 `systemd` 服务，原生写入 `clash.yaml`，采用 `TCP` + `MULTIPLEXING_LOW` + `HANDSHAKE_STANDARD`)
+  - **Sudoku** (AEAD `aes-128-gcm` + 动态 Padding，原生写入 `clash.yaml` 适配 Mihomo 内核)
+  - **Juicity** (QUIC + BBR + 自签 `www.bing.com`，输出 `juicity://` 通用链接)
+  - **Brook** (轻量级单文件服务端，输出 `brook://` 通用链接)
   - *(注：XHTTP 入站节点已暂时屏蔽，待官方 Sing-box 稳定版原生完善后同步开放)*
 
 - **永久固定订阅端口（免重复导入）**：
   - 首次运行自动分配并持久化记录订阅端口（存储于 `/etc/suoha_sub_port`）；
   - 静态订阅文件集中托管于 `/var/www/suoha_sub/`，重新执行脚本刷新节点或重启重新梭哈后，**客户端无需重新导入链接，直接点击“更新订阅”即可自动刷新最新节点**。
-
 ---
 
 ## 一键运行命令
