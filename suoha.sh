@@ -856,7 +856,7 @@ EOF
         fi
     fi
 
-    # 启动 Mieru (mita) 服务端
+    # 启动 Mieru (mita) 服务端 (守护进程模式: 先 run，再 apply config，再 start)
     local mieru_ok=0
     local mieru_status="未安装"
     if [ -x /opt/suoha_quick/mita ]; then
@@ -878,11 +878,14 @@ EOF
   "mtu": 1400
 }
 EOF
-        nohup /opt/suoha_quick/mita run -c /opt/suoha_quick/mieru.json >/opt/suoha_quick/mita.log 2>&1 &
+        nohup /opt/suoha_quick/mita run >/opt/suoha_quick/mita.log 2>&1 &
         local mita_pid=$!
         echo $mita_pid > /opt/suoha_quick/mita.pid
-        sleep 0.4
+        sleep 1
         if kill -0 "$mita_pid" 2>/dev/null; then
+            /opt/suoha_quick/mita apply config /opt/suoha_quick/mieru.json >/opt/suoha_quick/mita_apply.log 2>&1
+            /opt/suoha_quick/mita start >/opt/suoha_quick/mita_start.log 2>&1
+            sleep 0.5
             mieru_ok=1
             mieru_status="运行正常 (PID:${mita_pid} | 端口:${port_mieru})"
         else
